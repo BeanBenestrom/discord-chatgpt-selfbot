@@ -1,0 +1,10 @@
+# Folders
+__pycache__
+.pytest_cache
+.vscode
+experiments
+memory samples
+useless
+venv
+*.log
+TODO.md

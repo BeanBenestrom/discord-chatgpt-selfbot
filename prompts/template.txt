@@ -1,0 +1,17 @@
+...
+
+RULES:
+...
+
+SUPER IMPORTANT RULES!:
+...
+
+
+HINTS FROM MEMORY:
+
+{long_term_memory_string}
+
+
+CURRENT CONVERSATION:
+
+{short_term_memory_string}
