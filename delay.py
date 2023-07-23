@@ -3,6 +3,7 @@ from random import random
 import math
 
 from interface import DelayInterface
+from debug import LogHanglerInterface, LogNothing, LogType
 
 
 
@@ -40,7 +41,7 @@ class NaturalDelay(DelayInterface):
         self.randomness = randomness
 
 
-    def ping(self) -> float:
+    def ping(self, log: LogHanglerInterface=LogNothing()) -> float:
         '''Returns a quantity of time to wait in minutes'''
         r = lambda : 0.5
         if self.randomness:
@@ -59,7 +60,7 @@ class NaturalDelay(DelayInterface):
 
 
 class NoDelay(DelayInterface):
-    def ping(self) -> float:
+    def ping(self, log: LogHanglerInterface=LogNothing()) -> float:
         return 0
     
 

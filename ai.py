@@ -5,6 +5,7 @@ from random import random
 
 # Internal modules
 from utility import batch_iterator
+from debug import LogHanglerInterface, LogNothing, LogType
 
 # openai.api_key = os.environ["API_KEY_OPENAI"]
 EMBEDDING_MAX_TOKENS     = 8191
@@ -17,7 +18,7 @@ MAX_TOKENS = 4096
 
 
 
-def embed_strings(strings: list[str]) -> list[list[float]]:
+def embed_strings(strings: list[str], log: LogHanglerInterface=LogNothing()) -> list[list[float]]:
     # embeddings: list[list[float]] = []
     # tokens: int = 0
 
@@ -32,7 +33,7 @@ def embed_strings(strings: list[str]) -> list[list[float]]:
     return [[random()*2-1 for i in range(_DIM)] for j in range(len(strings)) ]
 
 
-def openai_generate_response(message : str) -> str:
+def openai_generate_response(message : str, log: LogHanglerInterface=LogNothing()) -> str:
     # response = openai.ChatCompletion.create(
     #     model       =   "gpt-3.5-turbo",
     #     messages    =   [{"role": "user", "content": message}],

@@ -2,6 +2,7 @@ import datetime, tiktoken
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 from typing import Callable
+from debug import LogHanglerInterface, LogNothing, LogType
 
 from structure import Message# , ShortTermMemory
 from ai import MAX_TOKENS
@@ -250,21 +251,34 @@ class DefaultTextModel(TextModelInterface):
 
 
 
-def prompt_crafter(long_term_memory: list[list[Message]], short_term_memory: list[Message], token_ratio: float, textModel: TextModelInterface) -> str:
+def prompt_crafter(
+        long_term_memory: list[list[Message]], 
+        short_term_memory: list[Message], 
+        token_ratio: float, 
+        textModel: TextModelInterface, 
+        log: LogHanglerInterface=LogNothing()) -> str:
     '''
     Craft a prompt containing long-term memory and short-term memory.
     '''
     assert token_ratio >= 0 and token_ratio <= 1
 
-    SPINE_TOKENS = 634 #! TODO:
-    max_tokens_for_crafter = MAX_TOKENS - 500 - SPINE_TOKENS
+    BASE_TOKENS = 634 #! TODO:
+    max_tokens_for_crafter = MAX_TOKENS - 500 - BASE_TOKENS
     max_stm_tokens = int(max_tokens_for_crafter*(1-token_ratio))
+
 
     ltm: str = ""
     stm: str = ""
     ltm_tokens_per_memory: int = int(max_tokens_for_crafter*token_ratio / len(long_term_memory))
     ltm_tokens: int = 0
     stm_tokens: int = 0
+
+    log.log(LogType.DEBUG, (f"PROMPT TOKENS:\n"
+                            f"total  : {max_tokens_for_crafter}"
+                            f"base   : {BASE_TOKENS}\n"
+                            f"stm    : {max_stm_tokens}"
+                            f"ltm    : {ltm_tokens_per_memory*len(long_term_memory)}"
+                            f"per ltm: {ltm_tokens_per_memory}\n"))
 
     i = 1
     for memory in long_term_memory:

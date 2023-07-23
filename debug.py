@@ -91,8 +91,8 @@ class LogStdcout(LogHanglerInterface):
         LogType.DEBUG       : colorama.Fore.LIGHTCYAN_EX,
         LogType.INFO        : colorama.Fore.LIGHTWHITE_EX,
         LogType.WARNING     : colorama.Fore.LIGHTYELLOW_EX,
-        LogType.ERROR       : colorama.Fore.LIGHTRED_EX,
-        LogType.CRITICAL    : colorama.Fore.LIGHTRED_EX,
+        LogType.ERROR       : colorama.Fore.RED,
+        LogType.CRITICAL    : colorama.Fore.RED,
         LogType.OK          : colorama.Fore.LIGHTGREEN_EX
     }
 
@@ -174,11 +174,11 @@ if __name__ == "__main__":
 
 
     def func2(log: LogHanglerInterface=LogNothing()):
-        log.log(LogType.DEBUG, "func2, debug, Hello!")
+        # log.log(LogType.DEBUG, "func2, debug, Hello!")
         for i in range(2):
-            print("WORKING...")
+            # print("WORKING...")
             time.sleep(1)
-        log.log(LogType.WARNING, "There might be a problem with the next function...")
+        # log.log(LogType.WARNING, "There might be a problem with the next function...")
         func3(log.sub())
         
 
@@ -189,6 +189,11 @@ if __name__ == "__main__":
 
 
     func1("Bob1", "Freeman", LogStdcout(LogType.INFO, "x_206346498103464981"))
+    print((f"Created JSON object:\n"
+                                f"id: {0}\n"
+                                f"file path: {1}\n"
+                                f"oldest memory: {2}\n"
+                                f"newest memory: {3}"))
     # func1("Bob2", "Freeman", LogStdcout())
     # func1("Bob3", "Freeman")
     # func2("Sassy1", "Sal", None)

@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from utility import multi_batch_iterator, Result
 from structure import Message, DatabaseEntry
 
+from debug import LogHanglerInterface, LogNothing, LogType
+
 # ENUMS
 
 class CollectionType(Enum):
@@ -79,23 +81,25 @@ class MilvusConnection():
         return self._collection.has_partition(MilvusConnection.get_partion_name(channel_id))
 
 
-    def create_channel_memory_if_new(self, channel_id : int) -> bool:
+    def create_channel_memory_if_new(self, channel_id : int, log: LogHanglerInterface=LogNothing()) -> bool:
         '''Returns True if channel was created, False if channel wasn't created because it already exists'''
         if not self.has_channel(channel_id):
             self._collection.create_partition(MilvusConnection.get_partion_name(channel_id))
+            log.log(LogType.INFO, f"Channel created\nid: {channel_id}")
             return True
         return False
 
 
-    def remove_channel_memory_if_exists(self, channel_id : int) -> bool:
+    def remove_channel_memory_if_exists(self, channel_id : int, log: LogHanglerInterface=LogNothing()) -> bool:
         '''Returns True if channel was removed, False if channel wasn't removed because it doesn't exist'''
         if self.has_channel(channel_id):
             self._collection.drop_partition(MilvusConnection.get_partion_name(channel_id))
+            log.log(LogType.INFO, f"Channel removed\nid: {channel_id}")
             return True
         return False
 
 
-    def add_entries(self, channel_id : int, entries : list[DatabaseEntry]) -> bool:
+    def add_entries(self, channel_id : int, entries : list[DatabaseEntry], log: LogHanglerInterface=LogNothing()) -> bool:
         """Returns True if entries were succesfully added, False if error occurred while inserting"""
 
         organized_entries = [[] for _ in range(self._collection_info.schema_size)]
@@ -109,26 +113,29 @@ class MilvusConnection():
         try:
             for organized_entries_batch in multi_batch_iterator(organized_entries, self._collection_info.max_insert_batch_size):
                 self._collection.insert(organized_entries_batch, partition_name=MilvusConnection.get_partion_name(channel_id))
+                log.log(LogType.DEBUG, f"Batch added into {self._collection_info.collection_name} - size: {len(organized_entries_batch[0])}")
         except MilvusException as e:
+            log.log(LogType.ERROR, f"Failed to insert messages into {self._collection_info.collection_name}!\namount: {len(entries)}\nfirst message: {entries[0].message}")
             return False
 
         self._collection.flush()
         return True
 
 
-    def remove_entries(self, channel_id : int, entry_ids : list[int]) -> bool:
+    def remove_entries(self, channel_id : int, entry_ids : list[int], log: LogHanglerInterface=LogNothing()) -> bool:
         """Returns True if entries were succesfully removed, False if channel doesn't exist or error occurred while deleting"""
         if not self.has_channel(channel_id): return False
         expr = "id in " + str(entry_ids)
         try: 
             self._collection.delete(expr, partition_name=MilvusConnection.get_partion_name(channel_id))
         except MilvusException as e:
+            log.log(LogType.ERROR, f"Failed to remove messages from {self._collection_info.collection_name}!\namount: {len(entry_ids)}\nfirst message id: {entry_ids[0]}")
             return False
         return True
 
 
 
-    def create_index(self) -> bool:
+    def create_index(self, log: LogHanglerInterface=LogNothing()) -> bool:
         """Returns True if index was succesfully created, False if error occurred"""
         index = {
             "index_type": "IVF_FLAT",
@@ -138,12 +145,12 @@ class MilvusConnection():
         try:
             self._collection.create_index("embedding", index)
         except MilvusException as e:
+            log.log(LogType.ERROR, f"Failed to create index for {self._collection_info.collection_name}!")
             return False
         return True
 
 
-    def search(self, channel_id : int, vectors : list[list[float]] | None = None, expr : str | None = None) -> Result[list[list[Message]]]:
-        self.create_channel_memory_if_new(channel_id)
+    def search(self, channel_id : int, vectors : list[list[float]] | None = None, expr : str | None = None, log: LogHanglerInterface=LogNothing()) -> Result[list[list[Message]]]:
         search_param = {
             "data"              :   vectors,
             "anns_field"        :   "embedding",
@@ -158,6 +165,7 @@ class MilvusConnection():
             self._collection.load([MilvusConnection.get_partion_name(channel_id)])
             res = self._collection.search(**search_param)
         except MilvusException as e:
+            log.log(LogType.ERROR, f"Search failed for {self._collection_info.collection_name}!\nvector amount: {len(vectors) if vectors else '0'}\nexpr: {expr}")
             return Result.err(e)
         
         self._collection.release()

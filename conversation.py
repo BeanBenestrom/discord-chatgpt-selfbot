@@ -22,7 +22,7 @@ class ComplexMemoryConversation(ConversationInterface):
     reading_seconds_per_char: float = 18/377   # In seconds
     writing_seconds_per_char: float = 18/84    # In seconds
 
-    def __init__(self, channel_id: int, memory: MemoryInterface, delay: DelayInterface) -> None:
+    def __init__(self, channel_id: int, memory: MemoryInterface, delay: DelayInterface, log: LogHanglerInterface=LogNothing()) -> None:
         self.memory = memory
         self.delay = delay
         super().__init__(channel_id)
@@ -33,21 +33,21 @@ class ComplexMemoryConversation(ConversationInterface):
 
 
     def respond(self, log: LogHanglerInterface=LogNothing()) -> str:
-        stm_messages: list[Message] = self.memory.get_short_term_memory()
+        stm_messages: list[Message] = self.memory.get_short_term_memory(log=log.sub())
         log.log(LogType.INFO, f"Got short term memory")
         log.log(LogType.DEBUG, f"STM info:\nlen: {len(stm_messages)}\noldest: {str(stm_messages[0])}\nnewest: {str(stm_messages[-1])}")
 
-        ltm_search_results: list[Message] = self.memory.search_long_term_memory('\n'.join([message.content for message in self.unread_message_queue]))
+        ltm_search_results: list[Message] = self.memory.search_long_term_memory('\n'.join([message.content for message in self.unread_message_queue]), log=log.sub())
         log.log(LogType.INFO, "Got long term memory")
         log.log(LogType.DEBUG, "LTM info:\nresults: {}".format('\n         '.join([str(message) for message in ltm_search_results])))
 
         ltm_messages: list[list[Message]] = [get_messages_around_MAGIC(message) for message in ltm_search_results ] #! Make not magic
         log.log(LogType.INFO, "Magic done on long term memory!")
 
-        ai_prompt: str = prompt.prompt_crafter(ltm_messages[:3], stm_messages, 0.5, prompt.DefaultTextModel())
+        ai_prompt: str = prompt.prompt_crafter(ltm_messages[:3], stm_messages, 0.5, prompt.DefaultTextModel(), log=log.sub())
         log.log(LogType.INFO, "Prompt crafted!")
 
-        response: str = ai.openai_generate_response(ai_prompt)
+        response: str = ai.openai_generate_response(ai_prompt, log=log.sub())
         log.log(LogType.INFO, "Response generated!")
 
         return response
@@ -66,7 +66,7 @@ class ComplexMemoryConversation(ConversationInterface):
             while len(self.unsaved_message_queue) != 0:
                 unsaved_messages = self.unsaved_message_queue
                 self.unsaved_message_queue.clear()
-                self.memory.add_messages(unsaved_messages)
+                self.memory.add_messages(unsaved_messages, log=log.sub())
                 log.log(LogType.INFO, f"Added message(s) to memory!\nmessage: {str(message)}")
             self.is_saving_message = False
         log.log(LogType.DEBUG, "Unread message queue after:\n[{}]".format('\n'.join([str(message) for message in self.unread_message_queue])))
