@@ -54,26 +54,26 @@ def memory(setup, test_channel):
     DROP_ALL_MEMORY(CollectionType.TESTING)
 
 
-def test_MemoryMilvus_add_list(memory: MemoryMilvus, test_channel: int, messages: list[Message], embeddings: list[list[float]]):
+def test_MemoryMilvus_add_list(memory: MemoryMilvus, messages: list[Message], embeddings: list[list[float]]):
     memory.add_messages(messages[:3], embeddings[:3])
-    assert len(memory.search(embeddings[2])) == 3
-    assert memory.search(embeddings[2])[0] == messages[2]
+    assert len(memory.search(embeddings[2]).unwrap()) == 3
+    assert memory.search(embeddings[2]).unwrap()[0] == messages[2]
 
 
-def test_MemoryMilvus_add_empty_list(memory: MemoryMilvus, test_channel: int, messages: list[Message], embeddings: list[list[float]]):
+def test_MemoryMilvus_add_empty_list(memory: MemoryMilvus, messages: list[Message], embeddings: list[list[float]]):
     memory.add_messages([], [])
-    assert memory.search(embeddings[0]) == []
+    assert memory.search(embeddings[0]).unwrap() == []
 
 
-def test_MemoryMilvus_clear(memory: MemoryMilvus, test_channel: int, messages: list[Message], embeddings: list[list[float]]):
+def test_MemoryMilvus_clear(memory: MemoryMilvus, messages: list[Message], embeddings: list[list[float]]):
     memory.add_messages(messages[:5], embeddings[:5])
     memory.clear()
-    assert memory.search(embeddings[0]) == []
+    assert memory.search(embeddings[0]).unwrap() == []
 
 
-def test_MemoryMilvus_remove_messages(memory: MemoryMilvus, test_channel: int, messages: list[Message], embeddings: list[list[float]]):
+def test_MemoryMilvus_remove_messages(memory: MemoryMilvus, messages: list[Message], embeddings: list[list[float]]):
     memory.add_messages(messages[:5], embeddings[:5])
     memory.remove_messages([2, 3])
-    res: list[Message] = memory.search(embeddings[2])
+    res: list[Message] = memory.search(embeddings[2]).unwrap()
     assert len(res) == 3
     assert res[0].id != 2

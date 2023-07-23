@@ -1,18 +1,18 @@
 # External modules
 import asyncio
 from typing import Callable
+from colorama import Fore
 
 # Internal modules
-from interface import ConversationInterface
-from structure import Message
-
 import prompt, ai
-from memory import MemoryInterface
-from delay import DelayInterface
+from interface import ConversationInterface, MemoryInterface, DelayInterface
+from structure import Message
+from debug import LogHanglerInterface, LogNothing, LogType
 
 
 def get_messages_around_MAGIC(message: Message) -> list[Message]:   #! Make not magic
     return [message]
+
 
 
 class ComplexMemoryConversation(ConversationInterface):
@@ -32,17 +32,34 @@ class ComplexMemoryConversation(ConversationInterface):
         return self.is_processing
 
 
-    def respond(self) -> str:
-        stm_messages = self.memory.get_short_term_memory()
-        ltm_search_results = self.memory.search_long_term_memory('\n'.join([message.content for message in self.unread_message_queue]))
+    def respond(self, log: LogHanglerInterface=LogNothing()) -> str:
+        stm_messages: list[Message] = self.memory.get_short_term_memory()
+        log.log(LogType.INFO, f"Got short term memory")
+        log.log(LogType.DEBUG, f"STM info:\nlen: {len(stm_messages)}\noldest: {str(stm_messages[0])}\nnewest: {str(stm_messages[-1])}")
+
+        ltm_search_results: list[Message] = self.memory.search_long_term_memory('\n'.join([message.content for message in self.unread_message_queue]))
+        log.log(LogType.INFO, "Got long term memory")
+        log.log(LogType.DEBUG, "LTM info:\nresults: {}".format('\n         '.join([str(message) for message in ltm_search_results])))
+
         ltm_messages: list[list[Message]] = [get_messages_around_MAGIC(message) for message in ltm_search_results ] #! Make not magic
+        log.log(LogType.INFO, "Magic done on long term memory!")
+
         ai_prompt: str = prompt.prompt_crafter(ltm_messages[:3], stm_messages, 0.5, prompt.DefaultTextModel())
-        return ai.openai_generate_response(ai_prompt)
+        log.log(LogType.INFO, "Prompt crafted!")
+
+        response: str = ai.openai_generate_response(ai_prompt)
+        log.log(LogType.INFO, "Response generated!")
+
+        return response
 
     
-    async def add_message(self, message: Message, reset_unread_queue: int) -> None:
+    async def add_message(self, message: Message, reset_unread_queue: int, log: LogHanglerInterface=LogNothing()) -> None:
+        log.log(LogType.DEBUG, "Unread message queue before:\n[{}]".format('\n'.join([str(message) for message in self.unread_message_queue])))
+        
+        # Add or clean unread message queue
         if reset_unread_queue: self.unread_message_queue = []
         else                 : self.unread_message_queue.append(message)
+
         self.unsaved_message_queue.append(message)
         if not self.is_saving_message:
             self.is_saving_message = True
@@ -50,30 +67,65 @@ class ComplexMemoryConversation(ConversationInterface):
                 unsaved_messages = self.unsaved_message_queue
                 self.unsaved_message_queue.clear()
                 self.memory.add_messages(unsaved_messages)
+                log.log(LogType.INFO, f"Added message(s) to memory!\nmessage: {str(message)}")
             self.is_saving_message = False
+        log.log(LogType.DEBUG, "Unread message queue after:\n[{}]".format('\n'.join([str(message) for message in self.unread_message_queue])))
 
 
-    async def communicate(self) -> str:
+    async def communicate(self, log: LogHanglerInterface=LogNothing()) -> str:
+        log.log(LogType.INFO, "Communicating...")
         response: str = ""
-        if not self.is_processing:
+        if not self.is_processing and len(self.unread_message_queue) != 0:
             self.is_processing = True 
-            attempts: int = 0
-            await asyncio.sleep(self.delay.ping())                                      # Bot start computing delay
-            while len(self.unread_message_queue) != 0 and attempts < 3:
-                attempts += 1
+            reading_attempts : int = 0
+            response_attempts: int = 0
+
+            # Sleeping delay
+            delay: float = self.delay.ping()
+            log.log(LogType.INFO, f"Sleeping... ({delay})")
+            if delay > 0: await asyncio.sleep(delay)                                        # Bot start computing delay
+
+            while len(self.unread_message_queue) != 0 and reading_attempts < 5 and response_attempts < 3:
                 current_amount_of_unread_messages: int = len(self.unread_message_queue)
+
+                # Wait for all messages to be in memory
                 while self.is_saving_message:
                     await asyncio.sleep(0.1)
 
-                await asyncio.sleep(self.reading_seconds_per_char*sum([len(message.content.strip()) for message in self.unread_message_queue])) # Readig delay
-                if len(self.unread_message_queue) == 0: return ""
+                # Reading delay
+                reading_delay: float = self.reading_seconds_per_char*sum([len(message.content.strip()) for message in self.unread_message_queue])
+                log.log(LogType.INFO, f"Reading... ({reading_delay})")
+                await asyncio.sleep(reading_delay)                                          # Readig delay
+                reading_attempts += 1
+                if len(self.unread_message_queue) == 0: break
 
-                response = self.respond()
+                # Redo if message amount has changed
+                if current_amount_of_unread_messages != len(self.unread_message_queue):
+                    log.log(LogType.INFO, "New message(s) added. Rereading...") 
+                    continue
 
-                await asyncio.sleep(self.writing_seconds_per_char*len(response.strip())) # Writing delay
-                if len(self.unread_message_queue) == 0: return ""
-                if current_amount_of_unread_messages != len(self.unread_message_queue): continue
+                # Response
+                log.log(LogType.INFO, "Generating response...")
+                response = self.respond(log=log.sub())
+                response_attempts += 1
 
+                # Writing delay
+                writing_delay: float = self.writing_seconds_per_char*len(response.strip())
+                log.log(LogType.INFO, f"Writing... ({writing_delay})")
+                await asyncio.sleep(writing_delay)                                          # Writing delay
+                if len(self.unread_message_queue) == 0: break
+
+                # Redo if message amount has changed
+                if current_amount_of_unread_messages != len(self.unread_message_queue):
+                    log.log(LogType.INFO, "New message(s) added. Recalculating...") 
+                    continue
                 break
+
+            log.log(LogType.DEBUG, "CONVERSATION\nreading attempts: {}\nresponse attempts: {}\nmessages:\n    {}\nresponse:\n    {}".format(
+                reading_attempts,
+                response_attempts, 
+                '\n    '.join([str(message) for message in self.unread_message_queue]),
+                response))
+            self.unread_message_queue.clear()
             self.is_processing = False
         return response

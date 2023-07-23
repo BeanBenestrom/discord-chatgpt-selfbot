@@ -6,5 +6,8 @@ experiments
 memory samples
 useless
 venv
+logs
+
+# Files
 *.log
 TODO.md

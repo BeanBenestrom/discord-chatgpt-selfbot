@@ -8,14 +8,14 @@ from pymilvus import (
     Collection,
     Partition,
     SearchResult,
-    Milvus
+    MilvusException
 )
 
 from enum import Enum
 from dataclasses import dataclass
 
-from utility import multi_batch_iterator
-from structure import Message
+from utility import multi_batch_iterator, Result
+from structure import Message, DatabaseEntry
 
 # ENUMS
 
@@ -33,7 +33,6 @@ class PortType(Enum):
 
 _HOST : str      = 'localhost'
 _PORT : PortType = PortType.gRPC
-_CONNECTIONS = {}
 
 _DIM                    : int = 1536
 _MAX_AUTHOR_LENGTH      : int = 40
@@ -64,6 +63,12 @@ class MilvusConnection():
     _collection : Collection
     _collection_info : ConnectionInfo
 
+    @staticmethod
+    def get_partion_name(channel_id: int) -> str:
+        if channel_id < 0: return f"neg{str(channel_id*-1)}"
+        return f"{str(channel_id)}"
+
+
 
     def __init__(self, collection : Collection, collectionInfo : ConnectionInfo) -> None:
         self._collection      = collection
@@ -71,21 +76,27 @@ class MilvusConnection():
 
 
     def has_channel(self, channel_id : int) -> bool:
-        return self._collection.has_partition(str(channel_id))
+        return self._collection.has_partition(MilvusConnection.get_partion_name(channel_id))
 
 
-    def create_channel_memory_if_new(self, channel_id : int) -> None:
+    def create_channel_memory_if_new(self, channel_id : int) -> bool:
+        '''Returns True if channel was created, False if channel wasn't created because it already exists'''
         if not self.has_channel(channel_id):
-            self._collection.create_partition(str(channel_id))
+            self._collection.create_partition(MilvusConnection.get_partion_name(channel_id))
+            return True
+        return False
 
 
-    def remove_channel_memory_if_exists(self, channel_id : int) -> None:
+    def remove_channel_memory_if_exists(self, channel_id : int) -> bool:
+        '''Returns True if channel was removed, False if channel wasn't removed because it doesn't exist'''
         if self.has_channel(channel_id):
-            self._collection.drop_partition(str(channel_id))
+            self._collection.drop_partition(MilvusConnection.get_partion_name(channel_id))
+            return True
+        return False
 
 
-    def add_entries(self, channel_id : int, entries : list[DatabaseEntry]) -> None:
-        self.create_channel_memory_if_new(channel_id)
+    def add_entries(self, channel_id : int, entries : list[DatabaseEntry]) -> bool:
+        """Returns True if entries were succesfully added, False if error occurred while inserting"""
 
         organized_entries = [[] for _ in range(self._collection_info.schema_size)]
         for entry in entries:
@@ -95,29 +106,43 @@ class MilvusConnection():
             organized_entries[3].append(entry.message.content  )
             organized_entries[4].append(entry.embedding        )
 
-        for organized_entries_batch in multi_batch_iterator(organized_entries, self._collection_info.max_insert_batch_size):
-            # print(f"INSERT BATCH {organized_entries_batch[0]}")
-            self._collection.insert(organized_entries_batch, partition_name=str(channel_id))
+        try:
+            for organized_entries_batch in multi_batch_iterator(organized_entries, self._collection_info.max_insert_batch_size):
+                self._collection.insert(organized_entries_batch, partition_name=MilvusConnection.get_partion_name(channel_id))
+        except MilvusException as e:
+            return False
 
         self._collection.flush()
+        return True
 
 
-    def remove_entries(self, channel_id : int, entry_ids : list[int]) -> None:
+    def remove_entries(self, channel_id : int, entry_ids : list[int]) -> bool:
+        """Returns True if entries were succesfully removed, False if channel doesn't exist or error occurred while deleting"""
+        if not self.has_channel(channel_id): return False
         expr = "id in " + str(entry_ids)
-        if self.has_channel(channel_id):  
-            self._collection.delete(expr, partition_name=str(channel_id))
+        try: 
+            self._collection.delete(expr, partition_name=MilvusConnection.get_partion_name(channel_id))
+        except MilvusException as e:
+            return False
+        return True
 
 
-    def create_index(self):
+
+    def create_index(self) -> bool:
+        """Returns True if index was succesfully created, False if error occurred"""
         index = {
             "index_type": "IVF_FLAT",
             "metric_type": "L2",
             "params": {"nlist": 128},
         }
-        self._collection.create_index("embedding", index)
+        try:
+            self._collection.create_index("embedding", index)
+        except MilvusException as e:
+            return False
+        return True
 
 
-    def search(self, channel_id : int, vectors : list[list[float]] | None = None, expr : str | None = None) -> list[list[Message]]:
+    def search(self, channel_id : int, vectors : list[list[float]] | None = None, expr : str | None = None) -> Result[list[list[Message]]]:
         self.create_channel_memory_if_new(channel_id)
         search_param = {
             "data"              :   vectors,
@@ -125,24 +150,32 @@ class MilvusConnection():
             "param"             :   {"metric_type": "L2", "params": {"nprobe": 10}},
             "limit"             :   10,
             "expr"              :   expr,
-            "partition_names"   :   [str(channel_id)],
+            "partition_names"   :   [MilvusConnection.get_partion_name(channel_id)],
             "output_fields"     :   ["date", "author", "content"]
         }
 
-        self._collection.load([str(channel_id)])
-        res = self._collection.search(**search_param)
+        try:
+            self._collection.load([MilvusConnection.get_partion_name(channel_id)])
+            res = self._collection.search(**search_param)
+        except MilvusException as e:
+            return Result.err(e)
+        
         self._collection.release()
-        assert isinstance(res, SearchResult)
 
+        # Structure result to a list of messages
+        assert isinstance(res, SearchResult)            # Type checker doesn't realize this must be true
         messages : list[list[Message]] = [
             [ Message(hit.id, hit.entity.date , hit.entity.author, hit.entity.content) for hit in hits ] 
             for hits in res ]
 
-        return messages
+        return Result.ok(messages)
 
     
 
 # MODULE INTERFACE
+
+_CONNECTIONS: dict[str, MilvusConnection] = {}
+
 
 def connect_to_database() -> None:
     connections.connect("default", host=_HOST, port=_PORT.value)
@@ -152,7 +185,7 @@ def disconnect_from_database() -> None:
     connections.disconnect("default")
 
 
-def create_connection_to_collection(collectionType : CollectionType):
+def create_connection_to_collection(collectionType : CollectionType) -> MilvusConnection:
     global _CONNECTIONS
     if collectionType.value in _CONNECTIONS:
         return _CONNECTIONS[str(collectionType)]

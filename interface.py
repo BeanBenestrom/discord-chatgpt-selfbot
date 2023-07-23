@@ -12,10 +12,11 @@ class ConversationInterface(ABC):
 
     @abstractmethod
     def __init__(self, channel_id: int) -> None:
-        self.message_queue = []
         self.is_saving_message = False
         self.is_processing = False
         self.channel_id = channel_id
+        self.unread_message_queue = []
+        self.unsaved_message_queue = []
     
     @abstractmethod
     def communicate(self, messages: list[Message]) -> str:
@@ -24,9 +25,11 @@ class ConversationInterface(ABC):
 
 class MemoryInterface(ABC):
     channel_id: int
+    STM_LIMIT: int
 
-    def __init__(self, channel_id: int) -> None:
+    def __init__(self, channel_id: int, stm_limit: int) -> None:
         self.channel_id = channel_id
+        self.STM_LIMIT = stm_limit
 
     @abstractmethod
     def add_messages(self, messages: list[Message]) -> None:

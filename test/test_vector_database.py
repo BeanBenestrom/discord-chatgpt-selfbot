@@ -1,6 +1,7 @@
 import pytest
 from random import random
 from structure import Message
+from utility import Result
 from vector_database import (
     _DIM,
     SearchResult,
@@ -52,9 +53,10 @@ def connection(setup):
 
 
 def test_inserting_and_search(connection : MilvusConnection, embeddings : list[list[float]], entries : list[DatabaseEntry]):
+    connection.create_channel_memory_if_new(1)
     connection.add_entries(1, entries[:5])
     connection.create_index()
-    res : list[list[Message]] = connection.search(1, embeddings[2:5])
+    res : list[list[Message]] = connection.search(1, embeddings[2:5]).unwrap()
 
     assert res != []
     assert res[0][0].id == 3
@@ -63,35 +65,38 @@ def test_inserting_and_search(connection : MilvusConnection, embeddings : list[l
 
 
 def test_adding_empty_list(connection : MilvusConnection, embeddings : list[list[float]], entries : list[DatabaseEntry]):
+    connection.create_channel_memory_if_new(1)
     connection.add_entries(1, [entries[0]])
     connection.add_entries(1, [])
     connection.create_index()
-    res : list[list[Message]] = connection.search(1, [embeddings[0]])
+    res : list[list[Message]] = connection.search(1, [embeddings[0]]).unwrap()
     assert len(res) == 1
     assert len(res[0]) == 1
 
 
 def test_empty_collection(connection : MilvusConnection, embeddings : list[list[float]], entries : list[DatabaseEntry]):
     connection.create_index()
-    res : list[list[Message]] = connection.search(1, [])
+    res : list[list[Message]] = connection.search(1, []).unwrap()
     assert str(res) == "[]"
 
 
 def test_remove_entries(connection : MilvusConnection, embeddings : list[list[float]], entries : list[DatabaseEntry]):
+    connection.create_channel_memory_if_new(15)
     connection.add_entries(15, entries[:3])
     connection.remove_entries(15, [1, 2])
     connection.create_index()
-    res : list[list[Message]] = connection.search(15, [embeddings[2]])
+    res : list[list[Message]] = connection.search(15, [embeddings[2]]).unwrap()
     assert len(res) == 1
     assert len(res[0]) == 1
 
 
 def test_remove_wrong_and_no_entry(connection : MilvusConnection, embeddings : list[list[float]], entries : list[DatabaseEntry]):
+    connection.create_channel_memory_if_new(15)
     connection.add_entries(15, entries[:3])
     connection.remove_entries(15, [5, 6])
     connection.remove_entries(15, [])
     connection.create_index()
-    res : list[list[Message]] = connection.search(15, [embeddings[2]])
+    res : list[list[Message]] = connection.search(15, [embeddings[2]]).unwrap()
     assert len(res) == 1
     assert len(res[0]) == 3
 
