@@ -8,6 +8,7 @@ from pymilvus import (
     Collection,
     Partition,
     SearchResult,
+    SearchFuture,
     MilvusException
 )
 
@@ -110,15 +111,21 @@ class MilvusConnection():
             organized_entries[3].append(entry.message.content  )
             organized_entries[4].append(entry.embedding        )
 
+        results = []
         try:
             for organized_entries_batch in multi_batch_iterator(organized_entries, self._collection_info.max_insert_batch_size):
-                self._collection.insert(organized_entries_batch, partition_name=MilvusConnection.get_partion_name(channel_id))
+                res = self._collection.insert(organized_entries_batch, partition_name=MilvusConnection.get_partion_name(channel_id))
+                #results.append(res)
                 log.log(LogType.DEBUG, f"Batch added into {self._collection_info.collection_name} - size: {len(organized_entries_batch[0])}")
         except MilvusException as e:
             log.log(LogType.ERROR, f"Failed to insert messages into {self._collection_info.collection_name}!\namount: {len(entries)}\nfirst message: {entries[0].message}")
             return False
+        
+        # for result in results:
+        #     result.result()
 
         self._collection.flush()
+        log.log(LogType.DEBUG, "Insert success!")
         return True
 
 
@@ -150,7 +157,10 @@ class MilvusConnection():
         return True
 
 
-    def search(self, channel_id : int, vectors : list[list[float]] | None = None, expr : str | None = None, log: LogHanglerInterface=LogNothing()) -> Result[list[list[Message]]]:
+    def search(self, 
+                     channel_id : int, 
+                     vectors : list[list[float]] | None = None, expr : str | None = None, 
+                     log: LogHanglerInterface=LogNothing()) -> Result[list[list[Message]]]:
         search_param = {
             "data"              :   vectors,
             "anns_field"        :   "embedding",
@@ -163,20 +173,26 @@ class MilvusConnection():
 
         try:
             self._collection.load([MilvusConnection.get_partion_name(channel_id)])
-            res = self._collection.search(**search_param)
+            result = self._collection.search(**search_param)
         except MilvusException as e:
             log.log(LogType.ERROR, f"Search failed for {self._collection_info.collection_name}!\nvector amount: {len(vectors) if vectors else '0'}\nexpr: {expr}")
             return Result.err(e)
         
-        self._collection.release()
-
         # Structure result to a list of messages
-        assert isinstance(res, SearchResult)            # Type checker doesn't realize this must be true
+        if isinstance(result, SearchFuture): res = result.result()
+        else                               : res = result
+
+        self._collection.release()
+        log.log(LogType.DEBUG, "Search success!")
+
         messages : list[list[Message]] = [
             [ Message(hit.id, hit.entity.date , hit.entity.author, hit.entity.content) for hit in hits ] 
             for hits in res ]
 
         return Result.ok(messages)
+        # else:
+        #     log.log(LogType.ERROR, f"Failed to retreive result from search!\nstatus: {status}")
+        #     return Result.err(Exception(f"Failed to retreive result from search!\nstatus: {status}"))
 
     
 

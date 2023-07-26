@@ -1,12 +1,13 @@
 # External modules
-import asyncio
-from typing import Callable
+import asyncio, threading, multiprocessing 
+from typing import Callable, Any
 from colorama import Fore
 
 # Internal modules
 import prompt, ai
 from interface import ConversationInterface, MemoryInterface, DelayInterface
 from structure import Message
+from utility import Result, CustomThread
 from debug import LogHanglerInterface, LogNothing, LogType
 
 
@@ -32,19 +33,23 @@ class ComplexMemoryConversation(ConversationInterface):
         return self.is_processing
 
 
-    def respond(self, log: LogHanglerInterface=LogNothing()) -> str:
+    async def respond(self, log: LogHanglerInterface=LogNothing()) -> str:
         stm_messages: list[Message] = self.memory.get_short_term_memory(log=log.sub())
         log.log(LogType.INFO, f"Got short term memory")
-        log.log(LogType.DEBUG, f"STM info:\nlen: {len(stm_messages)}\noldest: {str(stm_messages[0])}\nnewest: {str(stm_messages[-1])}")
+        log.log(LogType.DEBUG, (f"STM INFO:\n"
+                                f"len   : {len(stm_messages)}\n"
+                                f"oldest: {str(stm_messages[ 0] if len(stm_messages) else None)}\n"
+                                f"newest: {str(stm_messages[-1] if len(stm_messages) else None)}"))
 
-        ltm_search_results: list[Message] = self.memory.search_long_term_memory('\n'.join([message.content for message in self.unread_message_queue]), log=log.sub())
+        ltm_search_results: list[Message] = self.memory.search_long_term_memory('\n'.join([message.content for message in self.unread_message_queue]), log.sub()).unwrap()
         log.log(LogType.INFO, "Got long term memory")
-        log.log(LogType.DEBUG, "LTM info:\nresults: {}".format('\n         '.join([str(message) for message in ltm_search_results])))
+        log.log(LogType.DEBUG, "LTM INFO:\nresults: {}".format('\n         '.join([str(message) for message in ltm_search_results])))
 
         ltm_messages: list[list[Message]] = [get_messages_around_MAGIC(message) for message in ltm_search_results ] #! Make not magic
         log.log(LogType.INFO, "Magic done on long term memory!")
 
         ai_prompt: str = prompt.prompt_crafter(ltm_messages[:3], stm_messages, 0.5, prompt.DefaultTextModel(), log=log.sub())
+        self.current_prompt = ai_prompt
         log.log(LogType.INFO, "Prompt crafted!")
 
         response: str = ai.openai_generate_response(ai_prompt, log=log.sub())
@@ -64,7 +69,7 @@ class ComplexMemoryConversation(ConversationInterface):
         if not self.is_saving_message:
             self.is_saving_message = True
             while len(self.unsaved_message_queue) != 0:
-                unsaved_messages = self.unsaved_message_queue
+                unsaved_messages = self.unsaved_message_queue.copy()
                 self.unsaved_message_queue.clear()
                 self.memory.add_messages(unsaved_messages, log=log.sub())
                 log.log(LogType.INFO, f"Added message(s) to memory!\nmessage: {str(message)}")
@@ -72,7 +77,7 @@ class ComplexMemoryConversation(ConversationInterface):
         log.log(LogType.DEBUG, "Unread message queue after:\n[{}]".format('\n'.join([str(message) for message in self.unread_message_queue])))
 
 
-    async def communicate(self, log: LogHanglerInterface=LogNothing()) -> str:
+    async def communicate(self, callback=Callable[[str], Any], log: LogHanglerInterface=LogNothing()):
         log.log(LogType.INFO, "Communicating...")
         response: str = ""
         if not self.is_processing and len(self.unread_message_queue) != 0:
@@ -106,7 +111,7 @@ class ComplexMemoryConversation(ConversationInterface):
 
                 # Response
                 log.log(LogType.INFO, "Generating response...")
-                response = self.respond(log=log.sub())
+                response = await self.respond(log=log.sub())
                 response_attempts += 1
 
                 # Writing delay
@@ -126,6 +131,10 @@ class ComplexMemoryConversation(ConversationInterface):
                 response_attempts, 
                 '\n    '.join([str(message) for message in self.unread_message_queue]),
                 response))
+            
+            if len(self.unread_message_queue) != 0:
+                asyncio.create_task(callback(response))
             self.unread_message_queue.clear()
             self.is_processing = False
-        return response
+
+

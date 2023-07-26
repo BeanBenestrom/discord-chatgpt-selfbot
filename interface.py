@@ -1,6 +1,10 @@
+import asyncio
 from abc import ABC, abstractmethod
 
+from typing import Callable, Any
+
 from structure import Message
+from utility import Result
 from debug import LogHanglerInterface, LogNothing, LogType
 
 
@@ -9,7 +13,8 @@ class ConversationInterface(ABC):
     unread_message_queue : list[Message]
     unsaved_message_queue: list[Message]
     is_saving_message: bool 
-    is_processing    : bool 
+    is_processing    : bool
+    current_prompt   : str
 
     @abstractmethod
     def __init__(self, channel_id: int, log: LogHanglerInterface=LogNothing()) -> None:
@@ -20,7 +25,11 @@ class ConversationInterface(ABC):
         self.unsaved_message_queue = []
     
     @abstractmethod
-    def communicate(self, messages: list[Message], log: LogHanglerInterface=LogNothing()) -> str:
+    async def add_message(self, message: Message, reset_unread_queue: int, log: LogHanglerInterface=LogNothing()) -> None:
+        ...
+
+    @abstractmethod
+    async def communicate(self, callback=Callable[[str], Any], log: LogHanglerInterface=LogNothing()) -> str:
         ...
 
 
@@ -39,7 +48,7 @@ class MemoryInterface(ABC):
     def remove_messages(self, message_ids: list[int], log: LogHanglerInterface=LogNothing()) -> None:
         ...
     @abstractmethod
-    def search_long_term_memory(self, text: str, log: LogHanglerInterface=LogNothing()) -> list[Message]:
+    def search_long_term_memory(self, text: str, log: LogHanglerInterface=LogNothing()) -> Result[list[Message]]:
         ...
     @abstractmethod
     def get_short_term_memory(self, log: LogHanglerInterface=LogNothing()) -> list[Message]:

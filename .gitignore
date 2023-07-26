@@ -4,6 +4,7 @@ __pycache__
 .vscode
 experiments
 memory samples
+memory with embeddings
 useless
 venv
 logs
@@ -11,3 +12,5 @@ logs
 # Files
 *.log
 TODO.md
+dev.json
+add_to_memory.py

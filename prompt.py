@@ -175,7 +175,7 @@ class DefaultTextModel(TextModelInterface):
         tokens      : list[int] = []
         total_tokens: int = 0
         amount      : int = 0
-
+        
         for i in range(len(messages) - 1, -1, -1):
             next        = self._message_to_string(messages[i - 1] if not i == 0 else None, messages[i])
             next_tokens = tokens_from_string(next)
@@ -196,7 +196,7 @@ class DefaultTextModel(TextModelInterface):
                     tokens.append(next_tokens)
                     strings.append(next)
                 break
-
+        strings.reverse()
         return GeneratedConversation(''.join(strings), total_tokens, messages[len(messages)-len(strings):])
 
 
@@ -263,22 +263,26 @@ def prompt_crafter(
     assert token_ratio >= 0 and token_ratio <= 1
 
     BASE_TOKENS = 634 #! TODO:
-    max_tokens_for_crafter = MAX_TOKENS - 500 - BASE_TOKENS
+    RESPONSE_TOKENS = 500
+    MARGIN_OF_ERROR = 100
+    max_tokens_for_crafter = MAX_TOKENS - RESPONSE_TOKENS - BASE_TOKENS - MARGIN_OF_ERROR
     max_stm_tokens = int(max_tokens_for_crafter*(1-token_ratio))
 
 
     ltm: str = ""
     stm: str = ""
-    ltm_tokens_per_memory: int = int(max_tokens_for_crafter*token_ratio / len(long_term_memory))
+    ltm_tokens_per_memory: int = int(max_tokens_for_crafter*token_ratio / len(long_term_memory)) if len(long_term_memory) else 0
     ltm_tokens: int = 0
     stm_tokens: int = 0
 
     log.log(LogType.DEBUG, (f"PROMPT TOKENS:\n"
-                            f"total  : {max_tokens_for_crafter}"
-                            f"base   : {BASE_TOKENS}\n"
-                            f"stm    : {max_stm_tokens}"
-                            f"ltm    : {ltm_tokens_per_memory*len(long_term_memory)}"
-                            f"per ltm: {ltm_tokens_per_memory}\n"))
+                            f"total   : {max_tokens_for_crafter}\n"
+                            f"base    : {BASE_TOKENS}\n"
+                            f"stm     : {max_stm_tokens}\n"
+                            f"ltm     : {int(max_tokens_for_crafter*token_ratio)}\n"
+                            f"per ltm : {ltm_tokens_per_memory}\n"
+                            f"response: {RESPONSE_TOKENS}\n"
+                            f"padding : {MARGIN_OF_ERROR}"))
 
     i = 1
     for memory in long_term_memory:

@@ -1,11 +1,11 @@
 # External modules
-import json, os, random
+import json, os, random, asyncio
 from dataclasses import dataclass
 from io import TextIOWrapper
 from datetime import datetime, timedelta
 
 # Internal modules
-import prompt, ai
+import prompt, ai, threading
 
 # Protocols
 from interface import MemoryInterface
@@ -98,8 +98,8 @@ class MemoryJson():
         log.log(LogType.DEBUG, (f"Created MemoryJson object:\n"
                                 f"id           : {channel_id}\n"
                                 f"file path    : {self.file_path}\n"
-                                f"oldest message: {str(self.memory.messages[0])}\n"
-                                f"newest message: {str(self.memory.messages[-1])}"))
+                                f"oldest message: {str(self.memory.messages[0] if len(self.memory.messages) else None)}\n"
+                                f"newest message: {str(self.memory.messages[-1] if len(self.memory.messages) else None)}"))
 
 
     def _load_memory(self):  
@@ -113,18 +113,20 @@ class MemoryJson():
 
 
     def add_messages(self, messages: list[Message], log: LogHanglerInterface=LogNothing()) -> None:
+        before: int = len(self.memory.messages)
         for message in messages:
             self.memory.tokens += self.textModel._tokens_from_message(self.memory.messages[0] if len(self.memory.messages) else None, message)
             self.memory.messages.append(message)
-        log.log(LogType.INFO, f"Added {len(messages)} message(s) to {self.file_path}")
+        log.log(LogType.INFO, f"Added {len(self.memory.messages) - before} message(s) to {self.file_path}")
         self._save_memory()
         
 
     def remove_oldest_messages(self, amount: int, log: LogHanglerInterface=LogNothing()) -> None:
+        before: int = len(self.memory.messages)
         # Remove messages
         self.memory.messages = self.memory.messages[amount:]
         self.memory.tokens = self.textModel._process_messages(self.memory.messages).tokens
-        log.log(LogType.INFO, f"Removed {amount} oldests message(s) from {self.file_path}")
+        log.log(LogType.INFO, f"Removed {before - len(self.memory.messages)} oldests message(s) from {self.file_path}")
         self._save_memory()
 
 
@@ -160,21 +162,23 @@ class ComplexMemory(MemoryInterface):
 
     def add_messages(self, messages: list[Message], log: LogHanglerInterface=LogNothing()) -> None:
         # Add to STM
-        self.STM.add_messages(messages)
+        self.STM.add_messages(messages, log=log.sub())
 
         # Skim of excess STM
-        stm: ShortTermMemory = self.STM.get()
+        stm: ShortTermMemory = self.STM.get(log=log.sub())
         messages_to_add_to_ltm: list[Message] = []
         
         converation: prompt.GeneratedConversation = self.textModel.conversation_crafter_newest_to_oldest(stm.messages, self.STM_LIMIT)
         messages_to_add_to_ltm = stm.messages[:len(stm.messages) - len(converation.messages)]
-        self.STM.remove_oldest_messages(len(messages_to_add_to_ltm))
+        self.STM.remove_oldest_messages(len(messages_to_add_to_ltm), log=log.sub())
 
         # Add excess STM to LTM
         if len(messages_to_add_to_ltm):
-            self.LTM_Json.add_messages(messages_to_add_to_ltm)
+            self.LTM_Json.add_messages(messages_to_add_to_ltm, log=log.sub())
             embeddings: list[list[float]] = ai.embed_strings([message.content for message in messages_to_add_to_ltm], log=log.sub())
-            self.LTM.add_messages(messages_to_add_to_ltm, embeddings)
+            self.LTM.add_messages(messages_to_add_to_ltm, embeddings, log=log.sub())
+            thread = threading.Thread(target=self.LTM.add_messages, args=(messages_to_add_to_ltm, embeddings, log.sub()))
+            thread.start()
     
     
     def remove_messages(self, message_ids: list[int], log: LogHanglerInterface=LogNothing()) -> None:
@@ -184,9 +188,9 @@ class ComplexMemory(MemoryInterface):
         ...
     
     
-    def search_long_term_memory(self, text: str, log: LogHanglerInterface=LogNothing()) -> list[Message]:
+    def search_long_term_memory(self, text: str, log: LogHanglerInterface=LogNothing()) -> Result[list[Message]]:
         embedding: list[float] = ai.embed_strings([text], log=log.sub())[0]
-        return self.LTM.search(embedding).unwrap()
+        return self.LTM.search(embedding)
 
 
     def get_short_term_memory(self, log: LogHanglerInterface=LogNothing()) -> list[Message]:
@@ -200,6 +204,58 @@ class ComplexMemory(MemoryInterface):
 
     def clear_short_term_memory(self, log: LogHanglerInterface=LogNothing()) -> None:
         self.STM.clear()
+
+
+class VirtualComplexMemory(MemoryInterface):
+    '''Complex memory that doesn't change the actual memory on disk'''
+    LTM      : MemoryMilvus
+    STM      : MemoryJson
+    STM_LIMIT: int
+    textModel: prompt.DefaultTextModel
+
+    current_messages: list[Message]
+
+
+    def __init__(self, channel_id: int, stm_limit: int, collectionType: CollectionType, log: LogHanglerInterface=LogNothing()) -> None:
+        self.LTM      = MemoryMilvus(channel_id, collectionType)
+        self.STM      = MemoryJson  (channel_id)
+        self.textModel = prompt.DefaultTextModel()
+        self.current_messages = []
+        super().__init__(channel_id, stm_limit)
+        log.log(LogType.DEBUG, (f"Created VirtualComplexMemory object:\n"
+                                f"id        : {channel_id}\n"
+                                f"text model: {type(self.textModel).__name__}\n"
+                                f"short term memory limit: {stm_limit}\n"))
+
+
+    def add_messages(self, messages: list[Message], log: LogHanglerInterface=LogNothing()) -> None:
+        # Add to STM
+        for message in messages:
+            self.current_messages.append(message)
+    
+    
+    def remove_messages(self, message_ids: list[int], log: LogHanglerInterface=LogNothing()) -> None:
+        # Find from STM with binary search
+        # If not removed, remove from LTM
+        # Else 
+        ...
+    
+    
+    def search_long_term_memory(self, text: str, log: LogHanglerInterface=LogNothing()) -> Result[list[Message]]:
+        embedding: list[float] = ai.embed_strings([text], log=log.sub())[0]
+        return self.LTM.search(embedding)
+
+
+    def get_short_term_memory(self, log: LogHanglerInterface=LogNothing()) -> list[Message]:
+        return (self.STM.get().messages + self.current_messages)
+
+
+    def clear_long_term_memory(self, log: LogHanglerInterface=LogNothing()) -> None:
+        pass
+
+
+    def clear_short_term_memory(self, log: LogHanglerInterface=LogNothing()) -> None:
+        pass
 
 
 
