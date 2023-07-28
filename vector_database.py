@@ -1,4 +1,5 @@
 # External modules
+import asyncio
 from pymilvus import (
     connections,
     utility,
@@ -15,7 +16,7 @@ from pymilvus import (
 from enum import Enum
 from dataclasses import dataclass
 
-from utility import multi_batch_iterator, Result
+from utility import multi_batch_iterator, Result, CustomThread
 from structure import Message, DatabaseEntry
 
 from debug import LogHanglerInterface, LogNothing, LogType
@@ -42,7 +43,7 @@ _MAX_AUTHOR_LENGTH      : int = 40
 _MAX_CONTENT_LENGTH     : int = 2500
 _MAX_INSERT_BATCH_SIZE  : int = 1000
 
-
+_MILVUS = None
 
 # STRUCTS
 
@@ -82,7 +83,7 @@ class MilvusConnection():
         return self._collection.has_partition(MilvusConnection.get_partion_name(channel_id))
 
 
-    def create_channel_memory_if_new(self, channel_id : int, log: LogHanglerInterface=LogNothing()) -> bool:
+    async def create_channel_memory_if_new(self, channel_id : int, log: LogHanglerInterface=LogNothing()) -> bool:
         '''Returns True if channel was created, False if channel wasn't created because it already exists'''
         if not self.has_channel(channel_id):
             self._collection.create_partition(MilvusConnection.get_partion_name(channel_id))
@@ -91,7 +92,7 @@ class MilvusConnection():
         return False
 
 
-    def remove_channel_memory_if_exists(self, channel_id : int, log: LogHanglerInterface=LogNothing()) -> bool:
+    async def remove_channel_memory_if_exists(self, channel_id : int, log: LogHanglerInterface=LogNothing()) -> bool:
         '''Returns True if channel was removed, False if channel wasn't removed because it doesn't exist'''
         if self.has_channel(channel_id):
             self._collection.drop_partition(MilvusConnection.get_partion_name(channel_id))
@@ -100,7 +101,7 @@ class MilvusConnection():
         return False
 
 
-    def add_entries(self, channel_id : int, entries : list[DatabaseEntry], log: LogHanglerInterface=LogNothing()) -> bool:
+    async def add_entries(self, channel_id : int, entries : list[DatabaseEntry], log: LogHanglerInterface=LogNothing()) -> bool:
         """Returns True if entries were succesfully added, False if error occurred while inserting"""
 
         organized_entries = [[] for _ in range(self._collection_info.schema_size)]
@@ -114,7 +115,10 @@ class MilvusConnection():
         results = []
         try:
             for organized_entries_batch in multi_batch_iterator(organized_entries, self._collection_info.max_insert_batch_size):
-                res = self._collection.insert(organized_entries_batch, partition_name=MilvusConnection.get_partion_name(channel_id))
+                res = await asyncio.get_event_loop().run_in_executor(None, lambda _ : self._collection.insert(
+                        organized_entries_batch, 
+                        partition_name=MilvusConnection.get_partion_name(channel_id))
+                    , "param")
                 #results.append(res)
                 log.log(LogType.DEBUG, f"Batch added into {self._collection_info.collection_name} - size: {len(organized_entries_batch[0])}")
         except MilvusException as e:
@@ -129,12 +133,12 @@ class MilvusConnection():
         return True
 
 
-    def remove_entries(self, channel_id : int, entry_ids : list[int], log: LogHanglerInterface=LogNothing()) -> bool:
+    async def remove_entries(self, channel_id : int, entry_ids : list[int], log: LogHanglerInterface=LogNothing()) -> bool:
         """Returns True if entries were succesfully removed, False if channel doesn't exist or error occurred while deleting"""
         if not self.has_channel(channel_id): return False
         expr = "id in " + str(entry_ids)
         try: 
-            self._collection.delete(expr, partition_name=MilvusConnection.get_partion_name(channel_id))
+            await asyncio.get_event_loop().run_in_executor(None, lambda _ : self._collection.delete(expr, partition_name=MilvusConnection.get_partion_name(channel_id)), "param")
         except MilvusException as e:
             log.log(LogType.ERROR, f"Failed to remove messages from {self._collection_info.collection_name}!\namount: {len(entry_ids)}\nfirst message id: {entry_ids[0]}")
             return False
@@ -142,7 +146,7 @@ class MilvusConnection():
 
 
 
-    def create_index(self, log: LogHanglerInterface=LogNothing()) -> bool:
+    async def create_index(self, log: LogHanglerInterface=LogNothing()) -> bool:
         """Returns True if index was succesfully created, False if error occurred"""
         index = {
             "index_type": "IVF_FLAT",
@@ -150,14 +154,14 @@ class MilvusConnection():
             "params": {"nlist": 128},
         }
         try:
-            self._collection.create_index("embedding", index)
+            await asyncio.get_event_loop().run_in_executor(None, lambda _ : self._collection.create_index("embedding", index), "param")
         except MilvusException as e:
             log.log(LogType.ERROR, f"Failed to create index for {self._collection_info.collection_name}!")
             return False
         return True
 
 
-    def search(self, 
+    async def search(self, 
                      channel_id : int, 
                      vectors : list[list[float]] | None = None, expr : str | None = None, 
                      log: LogHanglerInterface=LogNothing()) -> Result[list[list[Message]]]:
@@ -171,9 +175,12 @@ class MilvusConnection():
             "output_fields"     :   ["date", "author", "content"]
         }
 
+        partitionName = MilvusConnection.get_partion_name(channel_id)
+        log.log(LogType.WARNING, partitionName)
+
         try:
-            self._collection.load([MilvusConnection.get_partion_name(channel_id)])
-            result = self._collection.search(**search_param)
+            await asyncio.get_event_loop().run_in_executor(None, lambda _ : self._collection.load([partitionName]), "param")
+            result = await asyncio.get_event_loop().run_in_executor(None, lambda _ : self._collection.search(**search_param), "param")
         except MilvusException as e:
             log.log(LogType.ERROR, f"Search failed for {self._collection_info.collection_name}!\nvector amount: {len(vectors) if vectors else '0'}\nexpr: {expr}")
             return Result.err(e)
@@ -182,7 +189,7 @@ class MilvusConnection():
         if isinstance(result, SearchFuture): res = result.result()
         else                               : res = result
 
-        self._collection.release()
+        await asyncio.get_event_loop().run_in_executor(None, lambda _ : self._collection.release(), "param")
         log.log(LogType.DEBUG, "Search success!")
 
         messages : list[list[Message]] = [
@@ -201,15 +208,15 @@ class MilvusConnection():
 _CONNECTIONS: dict[str, MilvusConnection] = {}
 
 
-def connect_to_database() -> None:
-    connections.connect("default", host=_HOST, port=_PORT.value)
+async def connect_to_database() -> None:
+    await asyncio.get_event_loop().run_in_executor(None, lambda _ : connections.connect("default", host=_HOST, port=_PORT.value), "param")
+    
+
+async def disconnect_from_database() -> None:
+    await asyncio.get_event_loop().run_in_executor(None, lambda _ : connections.disconnect("default"), "param")
 
 
-def disconnect_from_database() -> None:
-    connections.disconnect("default")
-
-
-def create_connection_to_collection(collectionType : CollectionType) -> MilvusConnection:
+async def create_connection_to_collection(collectionType : CollectionType) -> MilvusConnection:
     global _CONNECTIONS
     if collectionType.value in _CONNECTIONS:
         return _CONNECTIONS[str(collectionType)]
@@ -238,6 +245,6 @@ def create_connection_to_collection(collectionType : CollectionType) -> MilvusCo
     return _CONNECTIONS[str(collectionType)]
 
 
-def DROP_ALL_MEMORY(collectionType : CollectionType):
+async def DROP_ALL_MEMORY(collectionType : CollectionType):
     if utility.has_collection(collectionType.value):
         utility.drop_collection(collectionType.value)

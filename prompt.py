@@ -1,4 +1,4 @@
-import datetime, tiktoken
+import datetime, tiktoken, re
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 from typing import Callable
@@ -58,11 +58,11 @@ class TextModelInterface(ABC):
     conversation: GeneratedConversation
 
     @abstractmethod
-    def _process_messages(self, messages: list[Message]) -> GeneratedConversation:
+    async def _process_messages(self, messages: list[Message]) -> GeneratedConversation:
         ...
 
     @abstractmethod
-    def conversation_crafter_oldest_to_newest(self, messages: list[Message], max_tokens: int) -> GeneratedConversation:
+    async def conversation_crafter_oldest_to_newest(self, messages: list[Message], max_tokens: int) -> GeneratedConversation:
         '''
         Crafts a string representation of a chain of messages which complies with being inside the token threshold.
         # ! BLA BLA BLA
@@ -70,7 +70,7 @@ class TextModelInterface(ABC):
         '''
         ...
     @abstractmethod
-    def conversation_crafter_newest_to_oldest(self, messages: list[Message], max_tokens: int) -> GeneratedConversation:
+    async def conversation_crafter_newest_to_oldest(self, messages: list[Message], max_tokens: int) -> GeneratedConversation:
         '''
         Crafts a string representation of a chain of messages which complies with being inside the token threshold.
         # ! BLA BLA BLA
@@ -78,7 +78,7 @@ class TextModelInterface(ABC):
         '''
         ...
     @abstractmethod
-    def conversation_crafter_center_to_ends(self, messages: list[Message], max_tokens: int) -> GeneratedConversation:
+    async def conversation_crafter_center_to_ends(self, messages: list[Message], max_tokens: int) -> GeneratedConversation:
         '''
         Crafts a string representation of a chain of messages which complies with being inside the token threshold.
         # ! BLA BLA BLA
@@ -92,27 +92,31 @@ class TextModelInterface(ABC):
 
 class DefaultTextModel(TextModelInterface):
 
-    def _message_to_string(self, prev_message: Message | None, current_message: Message) -> str:
+    async def _message_to_string(self, prev_message: Message | None, current_message: Message) -> str:
         if prev_message is None: return f"\n({current_message.date.split('.')[0]}) {current_message.author}:\n{current_message.content}\n"
 
         if current_message.content == "": current_message.content = "[attachment]"
+        
+        prev_message.date    = re.sub(r"\+\d{1,2}:\d{1,2}", '', prev_message.date)
+        current_message.date = re.sub(r"\+\d{1,2}:\d{1,2}", '', current_message.date)
 
         if len(prev_message.date)    == 19:    prev_message.date += ".000000"
         if len(current_message.date) == 19: current_message.date += ".000000"
 
         prev_date    = datetime.datetime.strptime(   prev_message.date, '%Y-%m-%d %H:%M:%S.%f')
         current_date = datetime.datetime.strptime(current_message.date, '%Y-%m-%d %H:%M:%S.%f')  
+
         if current_message.author == prev_message.author and abs( current_date - prev_date ).total_seconds() < 5 * 60:    
             return current_message.content + '\n'
         else:                                           
             return f"\n({current_message.date.split('.')[0]}) {current_message.author}:\n{current_message.content}\n"
 
 
-    def _tokens_from_message(self, prev_message: Message | None, current_message: Message) -> int:
-        return tokens_from_string(self._message_to_string(prev_message, current_message))
+    async def _tokens_from_message(self, prev_message: Message | None, current_message: Message) -> int:
+        return tokens_from_string(await self._message_to_string(prev_message, current_message))
 
 
-    def tokens_from_messages(self, messages: list[Message]):
+    async def tokens_from_messages(self, messages: list[Message]):
         info = {
             "total" : 0,
             "each"  : []
@@ -120,7 +124,7 @@ class DefaultTextModel(TextModelInterface):
 
         prev_message = None
         for message in messages:
-            next_tokens = self._tokens_from_message(prev_message, message)
+            next_tokens = await self._tokens_from_message(prev_message, message)
             info["total"] += next_tokens
             info["each"].append(next_tokens) 
             prev_message   = message
@@ -133,17 +137,17 @@ class DefaultTextModel(TextModelInterface):
 
 
 
-    def _process_messages(self, messages: list[Message]) -> GeneratedConversation: 
+    async def _process_messages(self, messages: list[Message]) -> GeneratedConversation: 
         string = ""
         prev_message: Message | None = None
         for message in messages:
-            string += self._message_to_string(prev_message, message)
+            string += await self._message_to_string(prev_message, message)
             prev_message = message
         return GeneratedConversation(string, tokens_from_string(string) if len(messages) else 0, messages)
 
 
 
-    def conversation_crafter_oldest_to_newest(self, messages: list[Message], max_tokens: int) -> GeneratedConversation:
+    async def conversation_crafter_oldest_to_newest(self, messages: list[Message], max_tokens: int) -> GeneratedConversation:
         '''
         Crafts a string representation of a chain of messages which complies with being inside the token threshold.
         Returned string could then be placed onto a prompt.
@@ -154,7 +158,7 @@ class DefaultTextModel(TextModelInterface):
         amount      : int = 0
         prev_message = None
         for message in messages:
-            next        = self._message_to_string(prev_message, message)
+            next        = await self._message_to_string(prev_message, message)
             next_tokens = tokens_from_string(next)
             if total_tokens + next_tokens > max_tokens: break
             total_tokens += next_tokens
@@ -165,7 +169,7 @@ class DefaultTextModel(TextModelInterface):
         return GeneratedConversation(string, total_tokens, messages[:amount])
 
 
-    def conversation_crafter_newest_to_oldest(self, messages: list[Message], max_tokens: int) -> GeneratedConversation:
+    async def conversation_crafter_newest_to_oldest(self, messages: list[Message], max_tokens: int) -> GeneratedConversation:
         '''
         Crafts a string representation of a chain of messages which complies with being inside the token threshold.
         Returned string could then be placed onto a prompt.
@@ -177,7 +181,7 @@ class DefaultTextModel(TextModelInterface):
         amount      : int = 0
         
         for i in range(len(messages) - 1, -1, -1):
-            next        = self._message_to_string(messages[i - 1] if not i == 0 else None, messages[i])
+            next        = await self._message_to_string(messages[i - 1] if not i == 0 else None, messages[i])
             next_tokens = tokens_from_string(next)
             total_tokens += next_tokens
             tokens.append(next_tokens)
@@ -188,7 +192,7 @@ class DefaultTextModel(TextModelInterface):
                     total_tokens -= tokens.pop()
                     strings.pop()
                     if i == len(messages) - 1: break
-                    next          = self._message_to_string(None, messages[i+1])
+                    next          = await self._message_to_string(None, messages[i+1])
                     next_tokens   = tokens_from_string(next)
                     total_tokens -= tokens.pop()
                     strings.pop()
@@ -200,7 +204,7 @@ class DefaultTextModel(TextModelInterface):
         return GeneratedConversation(''.join(strings), total_tokens, messages[len(messages)-len(strings):])
 
 
-    def conversation_crafter_center_to_ends(self, messages: list[Message], max_tokens: int) -> GeneratedConversation:
+    async def conversation_crafter_center_to_ends(self, messages: list[Message], max_tokens: int) -> GeneratedConversation:
         '''
         Crafts a string representation of a chain of messages which complies with being inside the token threshold.
         This functions starts adding messages from the center of the 
@@ -211,7 +215,7 @@ class DefaultTextModel(TextModelInterface):
         string      : str = ""
         total_tokens: int = 0
         
-        result = self.tokens_from_messages(messages)
+        result = await self.tokens_from_messages(messages)
 
         switch = True
         section = [0, len(messages) - 1]
@@ -226,7 +230,7 @@ class DefaultTextModel(TextModelInterface):
                 switch           = True
 
         result["total"] -= result["each"][section[0]]
-        tokens = self._tokens_from_message(None, messages[section[0]])
+        tokens = await self._tokens_from_message(None, messages[section[0]])
         result["total"] += tokens
 
         while result["total"] > max_tokens:
@@ -241,7 +245,7 @@ class DefaultTextModel(TextModelInterface):
 
         prev_message = None
         for message in messages[section[0]:section[1]+1]:
-            next        = self._message_to_string(prev_message, message)
+            next        = await self._message_to_string(prev_message, message)
             next_tokens = tokens_from_string(next)
             total_tokens += next_tokens
             string += next
@@ -251,7 +255,7 @@ class DefaultTextModel(TextModelInterface):
 
 
 
-def prompt_crafter(
+async def prompt_crafter(
         long_term_memory: list[list[Message]], 
         short_term_memory: list[Message], 
         token_ratio: float, 
@@ -286,21 +290,21 @@ def prompt_crafter(
 
     i = 1
     for memory in long_term_memory:
-        ltm_snippet  = textModel.conversation_crafter_center_to_ends(memory, ltm_tokens_per_memory).string
+        ltm_snippet  = (await textModel.conversation_crafter_center_to_ends(memory, ltm_tokens_per_memory)).string
         ltm         += f"MEMORY {i}{ltm_snippet}\n"
         i           += 1
     
-    stm = textModel.conversation_crafter_newest_to_oldest(short_term_memory, max_stm_tokens).string
+    stm = (await textModel.conversation_crafter_newest_to_oldest(short_term_memory, max_stm_tokens)).string
     # print(short_term_memory, max_stm_tokens)
     # print(tokens_from_string(stm))
-    prompt = DEFAULT(ltm.strip(), stm.strip())
+    prompt = await DEFAULT(ltm.strip(), stm.strip())
     return prompt
 
     # ltm_tokens = tokens_from_string(ltm)
     # stm_tokens = tokens_from_string(stm)
 
 
-def DEFAULT(long_term_memory_string, short_term_memory_string):
+async def DEFAULT(long_term_memory_string, short_term_memory_string):
     '''
     Default prompt for AI.
     Returns the full prompt containing the given long-term memory and short-term memory.

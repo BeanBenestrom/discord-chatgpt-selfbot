@@ -1,4 +1,4 @@
-import math
+import math, os, json
 from typing import TypeVar, Generic, Optional, Callable, Any
 from threading import Thread
 
@@ -127,3 +127,15 @@ class CustomThread(Thread):
         Thread.join(self, *args)
         return self._return
 
+
+
+def create_json_file_if_not_exist(filePath: str, default: dict | list):
+    assert filePath[-5:] == ".json"
+    if (not os.path.isfile (filePath) or os.path.getsize(filePath) == 0):
+        with open(filePath, 'w', encoding="utf-8") as file:
+            json.dump(default, file, ensure_ascii=False)
+        return True
+    return False
+
+
+# 

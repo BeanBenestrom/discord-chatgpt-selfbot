@@ -7,10 +7,11 @@ memory samples
 memory with embeddings
 useless
 venv
-logs
 
 # Files
 *.log
+*.json
 TODO.md
 dev.json
 add_to_memory.py
+logs.json

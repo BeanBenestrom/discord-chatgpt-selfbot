@@ -1,13 +1,17 @@
-import os, json, socket, pickle, threading, datetime, asyncio
+import os, json, socket, pickle, threading, datetime, asyncio, multiprocessing, subprocess, re
 from colorama import Fore
 from queue import Queue
+from typing import Callable, Any, TypeVar, Generic, Coroutine
+from enum import Enum
+from dataclasses import dataclass
 
 from prompt_toolkit.application import get_app
 from prompt_toolkit import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.formatted_text import HTML, FormattedText, to_formatted_text
-from prompt_toolkit.layout.containers import HSplit, VSplit, Window, HorizontalAlign
+from prompt_toolkit.layout.containers import HSplit, VSplit, Window, HorizontalAlign, WindowAlign
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.layout.scrollable_pane import ScrollablePane
 from prompt_toolkit.layout.layout import Layout
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.widgets import TextArea, Box, Frame, Button
@@ -15,282 +19,407 @@ from prompt_toolkit.styles import Style
 
 from interface import ConversationInterface
 from structure import Message
+from utility import create_json_file_if_not_exist
 from conversation import ComplexMemoryConversation
 from memory import VirtualComplexMemory
 from vector_database import connect_to_database, disconnect_from_database, CollectionType
 from delay import NaturalDelay
 
-from debug import LogHanglerInterface, LogStdcout, LogType
+import app, configuration, bot
+from app import TerminalText
+from debug import LogHanglerInterface, LogStdcout, LogType, LogJsonFile
+from prompt import DefaultTextModel
 
 
-_commands = Queue()
-maxSize = 3
-headerSize = 7
-bufferSize = 100
-run_client = True
+USERNAME = ""
+VIRTUAL_CONVERSATION: ConversationInterface | None = None
+virtual_conversation_messages: list[Message] = []
+virtual_user_alias = ""
+textModel = DefaultTextModel()
 
 
-# def clear_terminal():
-#     os.system('cls' if os.name == 'nt' else 'clear')
-
-
-# def recv(conn):
-#     global run_client
-#     res = conn.recv(headerSize)
-#     if not res:
-#         return
-#     length = int(res)
-#     data = bytes("", "utf-8")
-#     while run_client:
-#         if len(data)+bufferSize < length:
-#             data += conn.recv(bufferSize)
-#         else: 
-#             data += conn.recv(length - len(data))
-#         if len(data) >= length: 
-#             break
-#     return data
-
-
-# def send(conn, data):
-#     d = pickle.dumps(data)
-#     conn.send(bytes(f"{len(d):<{headerSize}}", "utf-8") + d)
-
-
-# async def func1(a, b, log: LogHanglerInterface):
-#     log.log(LogType.INFO, "FUNC1 - WAITING")
-#     await asyncio.sleep(4)
-#     log.log(LogType.OK, "FUNC1")
-
-# async def func2(a, b, log: LogHanglerInterface):
-#     log.log(LogType.INFO, "FUNC2 - WAITING")
-#     await asyncio.sleep(2)
-#     log.log(LogType.OK, "FUNC2")
-#     return "Hello, World!"
-
-
-# async def get_user_input():
-#     # Use asyncio's event loop to read user input asynchronously
-#     loop = asyncio.get_event_loop()
-#     user_input = await loop.run_in_executor(None, input, "Enter your input: ")
-#     return user_input
+class Page(Enum):
+    MAIN  = "Main",
+    VIRTUAL = "Virtual"
 
 
 
-# def socket_communication(conn):
-#     global run_client
-
-#     while run_client:
-#         res = recv(conn)
-#         print("res")
-#         if not res: 
-#             print("EXITSSS")
-#             break
-#         res = pickle.loads(res)
-#         _commands.put(res)
+EXIT = False
+PAGE: Page = Page.MAIN
 
 
-# async def virtual_communicate(conn):
-#     log: LogHanglerInterface = LogStdcout(LogType.DEBUG, "VIRTUAL")
-#     virtual_conversations = {}
+async def _async_func():
+    pass
 
-#     while run_client:
-        
-#         while _commands.empty() and run_client:
-#             await asyncio.sleep(0.1)
-
-#         command, args = _commands.get()
-        
-#         log.log(LogType.INFO, F"DEVELOPER COMMAND\ncommand: {command}\nargs:{args}")
-
-#         try:
-#             # DO STUFF
-#             if command == "CREATE_VIRTUAL_CONVERSATION": 
-#                 channel_id = int(args[0])
-
-#                 # Create vitual conversation
-#                 virtual_conversation: ConversationInterface = ComplexMemoryConversation(
-#                     channel_id,
-#                     VirtualComplexMemory(channel_id, 1500, CollectionType.MAIN, log=log.sub()), 
-#                     NaturalDelay(), 
-#                     log=log.sub())
-#                 virtual_conversations[str(channel_id)] = virtual_conversation
-
-#                 # Send the id of the virtual conversation
-#                 send(conn, True)
-
-#             if command == "SEND_VIRTUAL_MESSAGE":
-#                 channel_id = int(args[0])
-#                 user_message = args[1]
-
-#                 virtual_conversation: ConversationInterface = virtual_conversations[str(channel_id)]
-#                 assert(isinstance(virtual_conversation, ConversationInterface))
-
-#                 async def respond(string):
-#                     with open("outputs/virtual-conversation.txt", 'w', encoding='utf-8') as file:
-#                         file.write(virtual_conversation.current_prompt)
-#                     asyncio.create_task(virtual_conversation.add_message(Message(-1, str(datetime.datetime.now()), "BEAN", string), True, log=log.sub()))
-#                     send(conn, string)
-
-#                 asyncio.create_task(virtual_conversation.add_message(Message(-1, str(datetime.datetime.now()), "USER", user_message), False, log=log.sub()))
-#                 asyncio.create_task(virtual_conversation.communicate(respond, log=log.sub()))        
-
-#             if command == "REMOVE_VIRTUAL_CONVERSATION":
-#                 channel_id = int(args[0])
-#                 del virtual_conversations[str(channel_id)]
-#                 send(conn, True)
+G = TypeVar("G")
+@dataclass(frozen=True)
+class AllocatorResult(Generic[G]):
+    success: bool
+    result : G
 
 
-#         except Exception as e:
-#             log.log(LogType.ERROR, f"Failed to carry out command - {e}")
-#             pass
-#         finally:
-#             pass
+T = TypeVar("T")
+
+class Allocator():
+    deallocators: list[Callable[[], Any]]
+    working: bool
+    lock: bool
+
+    def __init__(self) -> None:
+        self.deallocators = []
+        self.working = False
+        self.lock = False
+
+    async def allocate(self, allocator: Callable[[], Coroutine[Any, Any, T]], deallocator: Callable[[], Any]) -> AllocatorResult[T | None]:
+        if not self.lock:
+            self.working = True
+            try:
+                result = await allocator()
+                success = True
+            except Exception as e:
+                log_terminal.append(f"Failed to run allocator!\n{e}", "error")
+                result = None
+                success = False
+            # log_terminal.append(f"Allocator - {success}, {result}")
+            self.deallocators.append(deallocator)
+            self.working = False
+            return AllocatorResult(success, result)
+        else:
+            log_terminal.append(f"Allocator is locked!", "error")
+            return AllocatorResult(False, None)
+
+    async def deallocate(self) -> None:
+        for deallocator in self.deallocators[:]:
+            try:
+                await deallocator()
+            except Exception as e:
+                log_terminal.append(f"Failed to run deallocator!\n{e}", "error")
+            self.deallocators.remove(deallocator)
+        log_terminal.append(f"CLEANED UP", "ok")
+
+    def empty(self) -> bool:
+        return len(self.deallocators) == 0
 
 
-text_area = FormattedTextControl()
-text_element = []
-log_area = FormattedTextControl()
 
+log_terminal = TerminalText(spacing=1)
+text_terminal = TerminalText()
 
 input_field = TextArea(height=1, style="class:input-field", multiline=False)
 input_prompt = FormattedTextControl('> ')
 
-content = VSplit([
-    HSplit([
-        VSplit([
-            Window(content=text_area, ignore_content_width=True, wrap_lines=True)]),
-        VSplit([Window(content=input_prompt, dont_extend_width=True), input_field])], padding_char='-', padding=1, padding_style='#ffffff'),
-    Window(content=log_area, ignore_content_width=True, wrap_lines=True)], padding_char='|', padding=1, padding_style='#ffffff')
+left_window = Window(content=text_terminal.target, ignore_content_width=True, wrap_lines=True)
+right_window = Window(content=log_terminal.target, ignore_content_width=True, wrap_lines=True)
+input_window = Window(content=input_prompt, dont_extend_width=True)
 
-def accept(buff):
-    pass
+hsplit = HSplit([
+            left_window,
+            VSplit([input_window, input_field])], padding_char='-', padding=1, padding_style='#ffffff')
+
+layout = Layout(
+    VSplit([
+        hsplit,
+        right_window], 
+    padding_char='|', padding=1, padding_style='#ffffff'))
 
 
-layout = Layout(content)
-
+# BINDINGS
 
 bindings = KeyBindings()
 
-@bindings.add("escape", 'q')  # Use Ctrl + Q to quit the application
-def _(event):
-    event.app.exit()
+# @bindings.add('i')
+# def _(event):
+#     get_app().layout.focus(input_field)
 
+# @bindings.add('t')
+# def _(event):
+#     get_app().layout.focus(left_window)
+
+# @bindings.add('l')
+# def _(event):
+#     get_app().layout.focus(right_window)
+
+@bindings.add("escape", 'q')  # Use Ctrl + Q to quit the application
+async def _(event):
+    await cleanup()
 
 
 style = Style(
     [
-        ("header", "fg:#ffffff bold underline"),
-        ("error", "fg:#ff0000"),
+        ("header", "fg:#ffffff bold"),
         ("focus", "fg:#ffffff"),
-        ("deselected", "fg:#000000"),
+        ("deselected", "fg:#404040"),
+        ("error", "fg:#ff0000"),
         ("ok", "fg:#00ff00"),
         ("output-field", ""),
         ("input-field", "fg:#40ff40"),
         ("line", "fg:#ffffff"),
+        ('cursor', 'reverse'),
     ]
 )
 
 
-app = Application(layout=layout, full_screen=True, key_bindings=bindings, style=style)
+allocator: Allocator = Allocator()
+_app = Application(layout=layout, full_screen=True, key_bindings=bindings, style=style, mouse_support=True)
 
 
-def update_text(text, row: int | None=None):
-    global text_area, text_element
-    if row is None:
-        text_element = text
-        text_area.text = FormattedText(text_element)
-    elif row == 0:
-        text_element.append(text)
-        text_area.text = FormattedText(text_element)
-    elif row > 0:
-        while len(text_element) < row:
-            text_element.append(('', '\n'))
-        text_element[row-1] = text
-        text_area.text = FormattedText(text_element)
-        log_area.text = text_element        # LOG
-        
-    app.invalidate()
+async def handle_input(text):
+    global PAGE, VIRTUAL_CONVERSATION, virtual_conversation_messages, virtual_user_alias
+    try:
+        if PAGE == Page.MAIN:
+            # Get input
+            log_terminal.append(text, "header")
+            parts = text.strip().lower().split(' ')
+            command = parts[0]
+
+            if command == "r":
+                await bot.reload()
+                app.print_channels(text_terminal)
+                return
+            
+            number = int(parts[1])
+
+            if command == "clst":
+                text_terminal.remove_lines(number)   
+                return
+            elif command == "clsl":
+                log_terminal.remove_lines(number)
+                return
+
+            id = int(parts[1])
+            if not configuration.is_channel_real(id):
+                log_terminal.append("Invalid channel", 'error')
+                return
+
+            if command == "v":
+                
+                # START CONVERSATION
+                VIRTUAL_CONVERSATION = ComplexMemoryConversation(
+                    id,
+                    await VirtualComplexMemory.create(id, 1500, CollectionType.MAIN, LogJsonFile(LogType.DEBUG, "addMemory_VIRTUAL")),
+                    NaturalDelay(),
+                    log=LogJsonFile(LogType.DEBUG, "initializeVIRTUAL")
+                    )
+                alias = configuration.get_channel_alias(id)
+                virtual_user_alias = "UNKNOWN" if alias == "" else alias
+                text_terminal.clear()
+                PAGE = Page.VIRTUAL
+
+            elif command == "b":
+                configuration.toggle_blacklist_channel(id)
+                app.print_channels(text_terminal)
+
+        #? -------------------------------------------------------------
+
+        elif PAGE == Page.VIRTUAL:
+            text = text.strip()
+            if text == "@quit":
+
+                # STOP CONVERSATION
+                VIRTUAL_CONVERSATION = None
+                virtual_conversation_messages = []
+                virtual_user_alias = ""
+                app.print_channels(text_terminal)
+                PAGE = Page.MAIN
+                return
+            
+            parts = text.split(' ')
+
+            if parts[0] == "@clst":
+                number = int(parts[1])
+                text_terminal.remove_lines(number)   
+                return
+            elif parts[0] == "@clsl":
+                number = int(parts[1])
+                log_terminal.remove_lines(number)
+                return
+            elif isinstance(VIRTUAL_CONVERSATION, ConversationInterface):
+                # TELL AI STUFF
+                async def respond(string: str) -> None:
+                    if isinstance(VIRTUAL_CONVERSATION, ConversationInterface):
+                        writing_delay: float = 18/84 / 5*len(string.strip())
+                        await asyncio.sleep(writing_delay)                                          # Writing delay
+
+                        bot_message = Message.message_with_current_date(-2, USERNAME, string)
+                        text_terminal.append_no_newline(await textModel._message_to_string(virtual_conversation_messages[-1] if len(virtual_conversation_messages) else None, 
+                                                                                bot_message))
+                        virtual_conversation_messages.append(bot_message)
+
+                        asyncio.create_task(VIRTUAL_CONVERSATION.add_message(
+                            Message.message_with_current_date(-2, USERNAME, string),
+                            True, 
+                            log=LogJsonFile(LogType.DEBUG, "addMessage_VIRTUAL")))
+                        
+                admin_message = Message.message_with_current_date(-1, virtual_user_alias, text)
+                text_terminal.append_no_newline(
+                    await textModel._message_to_string(virtual_conversation_messages[-1] if len(virtual_conversation_messages) else None, admin_message))
+                virtual_conversation_messages.append(admin_message)
+
+                asyncio.create_task(VIRTUAL_CONVERSATION.add_message(
+                    Message.message_with_current_date(-1, virtual_user_alias, text), 
+                    False, 
+                    log=LogJsonFile(LogType.DEBUG, "addMessage_VIRTUAL")))
+                asyncio.create_task(VIRTUAL_CONVERSATION.communicate(respond, log=LogJsonFile(LogType.DEBUG, "comunicate_VIRTUAL")))
+
+    except Exception as e:
+        log_terminal.append(f"Invalid input\n{e}", "error")
+
+
+
+def accept(buff):
+    global PAGE, VIRTUAL_CONVERSATION, virtual_conversation_messages, virtual_user_alias
+    if EXIT: _app.exit()
+    else:
+        loop = asyncio.get_event_loop()
+        loop.create_task(handle_input(buff.text))
+
+
+input_given = None
+
+def _accept(buff):
+    pass
+
+
+def accept_private_userName(buff):
+    global input_given
+    text = buff.text.strip()
+    if len(text) < 1:
+        log_terminal.append("Invalid username", "error")
+        return
+    input_field.accept_handler = accept    # type: ignore
+    input_given = text
+
+def accept_private_userId(buff):
+    global input_given
+    text = buff.text.strip()
+    try:
+        id = int(text)
+        input_field.accept_handler = accept    # type: ignore
+        input_given = id
+    except ValueError as e:
+        log_terminal.append("Invalid user id", "error")
+
+def accept_private_token(buff):
+    global input_given
+    text = buff.text.strip()
+    if len(text) < 1:
+        log_terminal.append("Invalid token", "error")
+        return
+    input_field.accept_handler = accept    # type: ignore
+    input_given = text
+
+input_field.accept_handler = accept         # type: ignore
+
+
+async def wait_for_input() -> str:
+    global input_given
+    input_given = None
+    while input_given is None:
+        await asyncio.sleep(0.5)
+    return input_given
+
+
+async def start_logging_terminal():
+    cmd = f"python debug_terminal.py"
+    process = subprocess.Popen(['start', 'cmd', '/k', cmd], shell=True, cwd=os.getcwd())
+
+
+async def stop_logging_terminal():
+    LogJsonFile().send_termination_signal()
+
+
+async def activate_discord_bot():
+    await bot.start(LogJsonFile())
 
 
 async def setup() -> bool:
-    text = [('class:header', "Startup configuration\n"),
-            ('', '\n'),
-            ('class:focus', "[-] Connecting to vector database...\n"),
-            ('class:deselected', "[ ] Setup logging terminal\n"),
-            ('class:deselected', "[ ] Activate discord bot\n")]
-    update_text(text)
+    global USERNAME
+    create_json_file_if_not_exist("private.json", {})
+    with open("private.json", encoding='utf-8') as file:
+        data = json.load(file)
+        update = False
+        if not "userName" in data:
+            text_terminal.append("Username missing. Input name...", "header")
+            input_field.accept_handler = accept_private_userName   # type: ignore
+            userName = await wait_for_input()
+            data["userName"] = userName
+            update = True
+            text_terminal.clear()
+        if not "userId" in data:
+            text_terminal.append("User id missing. Input id...", "header")
+            input_field.accept_handler = accept_private_userId   # type: ignore
+            userId = await wait_for_input()
+            data["userId"] = userId
+            update = True
+            text_terminal.clear()
+        if not "token" in data:
+            text_terminal.append("User token missing. Input token...", "header")
+            input_field.accept_handler = accept_private_token   # type: ignore
+            token = await wait_for_input()
+            data["token"] = token
+            update = True
+            text_terminal.clear()
+        if update:
+            with open("private.json", 'w', encoding='utf-8') as w_file:
+                json.dump(data, w_file)
+    with open("private.json", encoding='utf-8') as file:
+        USERNAME = json.load(file)["userName"]
+
+    text_terminal.append("Startup configuration"            , "header")
+    text_terminal.append("")
+    text_terminal.append("[ ] Connect to vector database"   , "focus")
+    text_terminal.append("[ ] Setup logging terminal"       , "deselected")
+    text_terminal.append("[ ] Activate discord bot"         , "deselected")
 
     # Setup vector database
-    update_text(('class:focus', "[-] Connecting to vector database...\n"), 3)
-    try:
-        await asyncio.sleep(2)
-    except Exception as e:
-        update_text(('class:error', "[!] Failed to connect to vector database!\n"), 3)
+    text_terminal.write(3, "[-] Connecting to vector database...", "focus")
+    if not (await allocator.allocate(connect_to_database, disconnect_from_database)).success:
+        text_terminal.write(3, "[!] Failed to connect to vector database!", "error")
         return False
-    update_text(('class:ok', "[#] Connected to vector database!\n"), 3)
+    text_terminal.write(3, "[#] Connected to vector database!", "ok")
 
     # Setup logging terminal
-    update_text(('class:focus', "[-] Seting up logging terminal...\n"), 4)
-    try:
-        await asyncio.sleep(2)
-        1 / 0
-    except Exception as e:
-        update_text(('class:error', "[!] Failed setup logging terminal!\n"), 4)
+    text_terminal.write(4, "[-] Seting up logging terminal...", "focus")
+    if not (await allocator.allocate(start_logging_terminal, stop_logging_terminal)).success:
+        text_terminal.write(4, "[!] Failed setup logging terminal!", "error")
         return False
-    update_text(('class:ok', "[#] Logging terminal setup!\n"), 4)
+    text_terminal.write(4, "[#] Logging terminal setup!", "ok")
 
     # Setup discord bot
-    update_text(('class:focus', "[-] Activating discord bot...\n"), 5)
-    try:
-        await asyncio.sleep(2)
-        1 / 0
-    except Exception as e:
-        update_text(('class:error', "[!] Failed to activate discord bot!\n"), 5)
+    text_terminal.write(5, "[-] Activating discord bot...", "focus")
+    if not (await allocator.allocate(activate_discord_bot, bot.stop)).success:
+        text_terminal.write(5, "[!] Failed to activate discord bot!", "error")
         return False
-    update_text(('class:ok', "[#] Discord bot active!\n"), 5)
+    text_terminal.write(5, "[#] Discord bot active!", "ok")
+    input_field.accept_handler = accept     # type: ignore
+    await asyncio.sleep(1)
     return True
 
 
+async def cleanup():
+    global EXIT
+    await allocator.deallocate()
+    input_prompt.text = FormattedText([('class:error', "EXIT > ")])
+    EXIT = True
+
+
 async def run():
+    global hsplit
+    # Setup
+    if not await setup(): 
+        await cleanup()
+        return
 
-    setup_success: bool = await setup()
-    if not setup_success:
-        input_prompt.text = FormattedText([('class:error', "EXIT > ")])
-
-    # START VECTOR DATABASE
-    # START DISCORD BOT
-    # WANT TO START DEV SERVER?
-    ...
+    # Developer
+    # log_terminal.append("SUCCESS")
+    app.print_channels(text_terminal)
 
 
 async def main():
-    # global run_client
-
-
     asyncio.create_task(run())
-    result = await app.run_async()
+    result = await _app.run_async()
     print(result)
 
-    # CLEAN UP
-
-
-
-
-    # connect_to_database()
-    # conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # conn.connect((socket.gethostbyname(socket.gethostname()), 54543))
-
-    # try:
-    #     asyncio.create_task(virtual_communicate(conn))
-    #     thread = threading.Thread(target=socket_communication, args=(conn, ))
-    #     thread.start()
-    #     await get_user_input()
-    # except Exception as e:
-    #     raise e
-    # finally:
-    #     run_client = False
-    #     conn.close()
-    #     disconnect_from_database()
 
 if __name__ == "__main__":
     asyncio.run(main())

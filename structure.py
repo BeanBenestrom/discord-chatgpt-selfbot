@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 
 @dataclass
@@ -17,7 +18,7 @@ class Message:
     
     @staticmethod
     def list_to_object(messageInfo: list) -> 'Message':
-        return Message(messageInfo[0], messageInfo[1], messageInfo[2], messageInfo[3])
+        return Message(messageInfo[0], str(messageInfo[1]), messageInfo[2], messageInfo[3])
     
     @staticmethod
     def message_with_current_date(id, author, content) -> 'Message':
@@ -50,4 +51,23 @@ class ShortTermMemory:
         return { 
             "tokens": self.tokens, 
             "messages": [Message.object_to_list(message) for message in self.messages] 
+        }
+    
+
+@dataclass
+class channelConfiguration:
+    alias: str = ""
+    blacklisted: bool = False
+    creation_date: datetime = field(default_factory=datetime.now)
+
+    def from_json(self, json: dict) -> None:
+        self.alias = json["alias"]
+        self.blacklisted = json["blacklisted"]
+        self.creation_date = datetime.strptime(json["creation_date"], "%Y-%m-%d %H:%M:%S.%f") 
+
+    def to_json(self) -> dict[str, Any]:
+        return { 
+            "alias": self.alias, 
+            "blacklisted": self.blacklisted,
+            "creation_date" : str(self.creation_date)
         }

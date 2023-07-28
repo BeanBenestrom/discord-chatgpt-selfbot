@@ -42,22 +42,22 @@ class MemoryInterface(ABC):
         self.STM_LIMIT = stm_limit
 
     @abstractmethod
-    def add_messages(self, messages: list[Message], log: LogHanglerInterface=LogNothing()) -> None:
+    async def add_messages(self, messages: list[Message], log: LogHanglerInterface=LogNothing()) -> None:
         ...
     @abstractmethod
-    def remove_messages(self, message_ids: list[int], log: LogHanglerInterface=LogNothing()) -> None:
+    async def remove_messages(self, message_ids: list[int], log: LogHanglerInterface=LogNothing()) -> None:
         ...
     @abstractmethod
-    def search_long_term_memory(self, text: str, log: LogHanglerInterface=LogNothing()) -> Result[list[Message]]:
+    async def search_long_term_memory(self, text: str, log: LogHanglerInterface=LogNothing()) -> Result[list[Message]]:
         ...
     @abstractmethod
-    def get_short_term_memory(self, log: LogHanglerInterface=LogNothing()) -> list[Message]:
+    async def get_short_term_memory(self, log: LogHanglerInterface=LogNothing()) -> list[Message]:
         ...
     @abstractmethod
-    def clear_long_term_memory(self, log: LogHanglerInterface=LogNothing()) -> None:
+    async def clear_long_term_memory(self, log: LogHanglerInterface=LogNothing()) -> None:
         ...
     @abstractmethod
-    def clear_short_term_memory(self, log: LogHanglerInterface=LogNothing()) -> None:
+    async def clear_short_term_memory(self, log: LogHanglerInterface=LogNothing()) -> None:
         ...
 
 

@@ -1,7 +1,11 @@
-import logging, inspect, typing, time, colorama
+import logging, inspect, typing, time, colorama, json, subprocess, os
+import multiprocessing as mp
 from enum import Enum
 from abc import ABC, abstractmethod
 from datetime import datetime
+from debug_terminal import json_file_path as debug_terminal_json_file_path
+from debug_terminal import termination_signal as debug_terminal_termination_signal
+from utility import create_json_file_if_not_exist
 
 # def init():
 #     colorama.init()
@@ -11,7 +15,7 @@ from datetime import datetime
 logger = logging.getLogger('simple_example')
 logger.setLevel(logging.DEBUG)
 # create file handler which logs even debug messages
-fh = logging.FileHandler('logs.log')
+fh = logging.FileHandler('logs/logs.log', encoding='utf-8')
 fh.setLevel(logging.DEBUG)
 # create console handler with a higher log level
 ch = logging.StreamHandler()
@@ -23,7 +27,7 @@ fh.setFormatter(formatter)
 # add the handlers to logger
 # logger.addHandler(ch)
 logger.addHandler(fh)
-logger.log(logging.INFO, f"\n{'-'*100}\n\nRan: {datetime.now()}\n{'-'*100}\n")
+LOGGED = False
 
 class LogType(Enum):
     DEBUG      = 0
@@ -57,6 +61,9 @@ class LogHanglerInterface(ABC):
     first_line_printed: bool
 
     def __init__(self, loggingLevel: LogType=LogType.INFO, identifier: str="", depth: int=0) -> None:
+        global LOGGED
+        if not LOGGED: logger.log(logging.INFO, f"\n{'-'*100}\n\nRan: {datetime.now()}\n{'-'*100}\n")
+        LOGGED = True
         self.loggingLevel = loggingLevel
         self.identifier = identifier
         self.depth = depth
@@ -97,6 +104,7 @@ class LogStdcout(LogHanglerInterface):
     }
 
     INDENTATION = "   o "
+
 
     def log(self, level: LogType, message: str) -> None:
         global LAST_IDENTIFIER_PRINTED_STDCOUT
@@ -155,9 +163,112 @@ class LogStdcout(LogHanglerInterface):
 
 
 
+class LogJsonFile(LogHanglerInterface):
+
+    LOG_SYMBOLS: dict = {
+        LogType.DEBUG       : '.',
+        LogType.INFO        : '&',
+        LogType.WARNING     : '*',
+        LogType.ERROR       : '!',
+        LogType.CRITICAL    : '!!',
+        LogType.OK          : '#'
+    }
+
+    LOG_COLORS: dict = {
+        LogType.DEBUG       : colorama.Fore.LIGHTCYAN_EX,
+        LogType.INFO        : colorama.Fore.LIGHTWHITE_EX,
+        LogType.WARNING     : colorama.Fore.LIGHTYELLOW_EX,
+        LogType.ERROR       : colorama.Fore.RED,
+        LogType.CRITICAL    : colorama.Fore.RED,
+        LogType.OK          : colorama.Fore.LIGHTGREEN_EX
+    }
+
+    INDENTATION = "   o "
+
+    def __init__(self, loggingLevel: LogType = LogType.INFO, identifier: str = "", depth: int = 0) -> None:
+        create_json_file_if_not_exist(debug_terminal_json_file_path, [])
+        super().__init__(loggingLevel, identifier, depth)
+
+
+    def send_termination_signal(self):
+        json_data: list
+
+        with open(debug_terminal_json_file_path, encoding='utf-8') as file:
+            json_data = json.load(file)
+
+        json_data.append(debug_terminal_termination_signal)
+
+        with open(debug_terminal_json_file_path, 'w', encoding='utf-8') as file:
+            json.dump(json_data, file, ensure_ascii=False)
+
+
+    def log(self, level: LogType, message: str) -> None:
+        global LAST_IDENTIFIER_PRINTED_STDCOUT
+        if self.loggingLevel.value > level.value: return
+
+        lines = message.split('\n')
+
+        # Information about caller
+        caller_frame = inspect.currentframe().f_back                                        # type: ignore
+        file_name = caller_frame.f_code.co_filename.split("Discord Selfbot\\")[1]           # type: ignore
+        function_name = caller_frame.f_code.co_name                                         # type: ignore
+
+        # Elements
+        e_date          : str = str(datetime.now().time()).split('.')[0]
+        e_id            : str = f"<{self.identifier}>".ljust(20)
+        e_indentation   : str = self.INDENTATION * self.depth
+        e_path          : str = f"{file_name}  {function_name}"
+        e_symbol        : str = f"[{self.LOG_SYMBOLS[level]}]"
+
+        # Color
+        c_date              = colorama.Fore.LIGHTBLACK_EX
+        c_id                = colorama.Fore.MAGENTA
+        c_indentation       = colorama.Fore.LIGHTBLACK_EX
+        c_path              = colorama.Fore.MAGENTA
+        c_extra_data        = colorama.Fore.LIGHTBLACK_EX
+      # c_extra_indentation = colorama.Fore.LIGHTBLACK_EX
+        c_base              = self.LOG_COLORS[level]
+
+        # Elements with color
+        p_date          : str = f"{c_date       }{e_date       }"
+        p_id            : str = f"{c_id         }{e_id         }"
+        p_indentation   : str = f"{c_indentation}{e_indentation}"
+        p_path          : str = f"{c_path       }{e_path       }"
+        p_symbol        : str = f"{c_base       }{e_symbol     }"
+
+        space = lambda string: ' '*len(string)
+
+        json_data: list
+
+        with open(debug_terminal_json_file_path, encoding='utf-8') as file:
+            json_data = json.load(file)
+
+            if not self.first_line_printed or LAST_IDENTIFIER_PRINTED_STDCOUT != self.identifier:
+                json_data.append(f"{space(e_date)} {p_id if LAST_IDENTIFIER_PRINTED_STDCOUT != self.identifier else space(e_id)} {p_indentation} {p_path}")
+                logger.log(logging.INFO, f"{space(e_date)} {e_id if LAST_IDENTIFIER_PRINTED_STDCOUT != self.identifier else space(e_id)} {e_indentation} {e_path}") 
+                self.first_line_printed = True
+
+            # Log main line
+            json_data.append(f"{p_date} {space(e_id)} {p_indentation}{self.INDENTATION} {p_symbol} {c_base}{lines[0]}{colorama.Fore.RESET}")
+            logger.log(logging.INFO, f"{e_date} {space(e_id)} {e_indentation}{self.INDENTATION} {e_symbol} {lines[0]}")
+
+            # Log extra lines
+            for line in lines[1:]:
+                json_data.append(f"{space(f'{e_date} {space(e_id)}')} {p_indentation}{self.INDENTATION} {space(e_symbol)} {c_extra_data}{line}{colorama.Fore.RESET}")
+                logger.log(logging.INFO, f"{space(f'{e_date} {space(e_id)}')} {e_indentation}{self.INDENTATION} {space(e_symbol)} {line}")
+
+        with open(debug_terminal_json_file_path, 'w', encoding='utf-8') as file:
+            json.dump(json_data, file, ensure_ascii=False)
+
+        LAST_IDENTIFIER_PRINTED_STDCOUT = self.identifier
+
+
+
+
 class LogNothing(LogHanglerInterface):
     def log(self, level: LogType, message: str) -> None:
         pass
+    
 
 
 
@@ -188,12 +299,22 @@ if __name__ == "__main__":
         log.log(LogType.ERROR, "Failed to compute!")
 
 
-    func1("Bob1", "Freeman", LogStdcout(LogType.INFO, "x_206346498103464981"))
-    print((f"Created JSON object:\n"
-                                f"id: {0}\n"
-                                f"file path: {1}\n"
-                                f"oldest memory: {2}\n"
-                                f"newest memory: {3}"))
+    cmd = f"python debug_terminal.py"
+    process = subprocess.Popen(['start', 'cmd', '/k', cmd], shell=True, cwd=os.getcwd())
+
+
+    log = LogJsonFile(LogType.INFO, "x_206346498103464981")
+    func1("Bob1", "Freeman", log)
+
+    time.sleep(4)
+
+    log.send_termination_signal()
+
+    # print((f"Created JSON object:\n"
+    #                             f"id: {0}\n"
+    #                             f"file path: {1}\n"
+    #                             f"oldest memory: {2}\n"
+    #                             f"newest memory: {3}"))
     # func1("Bob2", "Freeman", LogStdcout())
     # func1("Bob3", "Freeman")
     # func2("Sassy1", "Sal", None)
